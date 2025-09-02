@@ -33,7 +33,7 @@ class GameGUI:
                     if ev.key == pygame.K_ESCAPE:
                         running = False
                     elif ev.key == pygame.K_SPACE:
-                        self.eng.advance_week()
+                        self.eng.advance_turn()
                     elif ev.key == pygame.K_s and pygame.key.get_mods() & pygame.KMOD_CTRL:
                         self.eng.save_json("autosave.json")
                     elif ev.key in (pygame.K_EQUALS, pygame.K_PLUS):
@@ -78,7 +78,7 @@ class GameGUI:
             pygame.draw.rect(scr, color, (sx, sy, size-1, size-1))
 
         summary = self.eng.summary()
-        text = f"Week {summary['week']} | Tiles owned: {summary['owned_tiles']} | Total pop: {summary['total_pop']}"
+        text = f"Turn {summary['turn']} | Tiles owned: {summary['owned_tiles']} | Total pop: {summary['total_pop']}"
         hud = self.font.render(text, True, (240, 240, 240))
         scr.blit(hud, (8, 8))
 
