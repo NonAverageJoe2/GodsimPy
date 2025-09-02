@@ -19,6 +19,7 @@ from sim.terrain import generate_features, describe_feature
 from sim.civilization import initialize_civs, make_palette
 from worldgen import axial_to_world_flat, build_world, build_biomes
 from sim.state import from_worldgen
+from render import render_iso
 
 # Import hex popup if available
 try:
@@ -498,6 +499,8 @@ class GodsimGUI:
         self.info_panel = InfoPanel()
         self.info_panel.feature_map = self.feature_map
         self.control_panel = ControlPanel()
+        # View state: start with top-down and allow toggling isometric view
+        self.isometric_mode = False
         
         # Initialize hex popup if available
         self.hex_popup = HexPopup() if HexPopup else None
@@ -552,6 +555,9 @@ class GodsimGUI:
                     self.control_panel.view_mode = ViewMode.POPULATION
                 elif event.key == pygame.K_r:
                     self.control_panel.view_mode = ViewMode.RESOURCES
+                elif event.key == pygame.K_TAB:
+                    # Toggle between top-down and isometric views
+                    self.isometric_mode = not self.isometric_mode
                 elif event.key == pygame.K_s and pygame.key.get_mods() & pygame.KMOD_CTRL:
                     # Save world
                     save_npz(self.world_state, "quicksave.npz")
@@ -661,12 +667,24 @@ class GodsimGUI:
             render_width -= self.info_panel.width
         render_height = self.screen.get_height() - self.control_panel.height
         
-        # Create subsurface for hex map
+        # Create subsurface for map drawing
         map_surface = pygame.Surface((render_width, render_height))
-        
-        # Render hex map
-        self.hex_renderer.render(map_surface, self.camera, self.control_panel.view_mode)
-        
+
+        if self.isometric_mode:
+            # Render isometric view using array-based renderer
+            img = render_iso(
+                self.world_state.height_map,
+                self.world_state.biome_map,
+                self.world_state.hex_radius,
+                sea_level=self.world_state.sea_level,
+            )
+            iso_surf = pygame.image.fromstring(img.tobytes(), img.size, img.mode)
+            iso_surf = pygame.transform.smoothscale(iso_surf, (render_width, render_height))
+            map_surface.blit(iso_surf, (0, 0))
+        else:
+            # Default top-down view
+            self.hex_renderer.render(map_surface, self.camera, self.control_panel.view_mode)
+
         # Blit map surface to screen
         self.screen.blit(map_surface, (0, 0))
         

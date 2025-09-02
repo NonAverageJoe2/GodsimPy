@@ -3,6 +3,7 @@ import shlex
 
 from engine import SimulationEngine
 import render
+import numpy as np
 from time_model import DAYS_PER_MONTH
 
 
@@ -52,11 +53,24 @@ def cmd_autoplay(args):
 def cmd_export(args):
     eng = SimulationEngine()
     eng.load_json(args.world)
+    if args.topdown or args.isometric:
+        w = eng.world
+        H, W = w.height_hex, w.width_hex
+        height = np.zeros((H, W), dtype=np.float32)
+        biome = np.zeros((H, W), dtype=np.int32)
+        for t in w.tiles:
+            height[t.r, t.q] = float(t.height)
+            try:
+                biome[t.r, t.q] = int(t.biome)
+            except Exception:
+                biome[t.r, t.q] = 0
     if args.topdown:
-        render.render_topdown(eng.world, args.topdown)
+        img = render.render_topdown(biome, w.hex_size)
+        img.save(args.topdown)
         print(f"Saved {args.topdown}")
     if args.isometric:
-        render.render_isometric(eng.world, args.isometric)
+        img = render.render_iso(height, biome, w.hex_size, sea_level=w.sea_level)
+        img.save(args.isometric)
         print(f"Saved {args.isometric}")
 
 
