@@ -2,6 +2,8 @@ from __future__ import annotations
 
 """Terrain feature layer utilities."""
 
+from typing import Dict
+
 import numpy as np
 
 # Feature identifiers (uint8)
@@ -37,7 +39,7 @@ _DESCRIPTIONS = {
 }
 
 # Stable default placement probabilities
-DEFAULT_P: dict[str, float] = {
+DEFAULT_P: Dict[str, float] = {
     "forest": 0.12,
     "jungle": 0.08,
     "marsh": 0.05,
@@ -68,7 +70,7 @@ def _rand_mask(rng: np.random.Generator, shape: tuple[int, int], prob: float) ->
 def generate_features(
     biome: np.ndarray,
     rng: np.random.Generator,
-    p: dict[str, float] | None = None,
+    p: Dict[str, float] | None = None,
 ) -> np.ndarray:
     """Generate terrain features for ``biome``.
 
