@@ -18,6 +18,7 @@ def test_cli_export_writes_images(tmp_path):
         "python",
         "cli.py",
         "export",
+        "--world",
         str(world_path),
         "--topdown",
         str(top_path),

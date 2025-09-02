@@ -1,10 +1,19 @@
 import argparse
+import shlex
 
 from engine import SimulationEngine
 import render
+from time_model import DAYS_PER_MONTH
+
+
+def clamp(v: int, lo: int, hi: int) -> int:
+    return max(lo, min(hi, v))
 
 def cmd_new(args):
-    eng = SimulationEngine(width=args.width, height=args.height, seed=args.seed)
+    eng = SimulationEngine(width=args.width, height=args.height, seed=args.seed,
+                           hex_size=args.hex_size)
+    eng.init_worldgen(sea_percentile=args.sea_percentile,
+                      mountain_thresh=args.mountain_thresh)
     eng.seed_population_everywhere(min_pop=args.min_pop, max_pop=args.max_pop)
     if args.civ:
         for spec in args.civ:
@@ -50,6 +59,72 @@ def cmd_export(args):
         render.render_isometric(eng.world, args.isometric)
         print(f"Saved {args.isometric}")
 
+
+def cmd_set_timescale(args):
+    eng = SimulationEngine()
+    eng.load_json(args.world)
+    eng.world.time_scale = args.scale
+    eng.save_json(args.world)
+    print(f"Time scale set to {args.scale} in {args.world}")
+
+
+def cmd_set_date(args):
+    eng = SimulationEngine()
+    eng.load_json(args.world)
+    year = max(0, args.year)
+    month = clamp(args.month, 1, 12)
+    day = clamp(args.day, 1, DAYS_PER_MONTH[month - 1])
+    w = eng.world.calendar
+    w.year, w.month, w.day = year, month, day
+    eng.save_json(args.world)
+    print(f"Date set to {year}-{month}-{day} in {args.world}")
+
+
+def cmd_repl(args):
+    eng = SimulationEngine()
+    eng.load_json(args.world)
+    print("Enter commands: step N | spawn_army CIV Q R [--strength S] |"
+          " target ARMY Q R | summary | exit")
+    while True:
+        try:
+            line = input("> ").strip()
+        except EOFError:
+            break
+        if not line:
+            continue
+        parts = shlex.split(line)
+        cmd = parts[0]
+        if cmd == "step" and len(parts) >= 2:
+            n = int(parts[1])
+            for _ in range(n):
+                eng.advance_turn()
+            eng.save_json(args.world)
+            print(f"Advanced {n} steps")
+        elif cmd == "spawn_army" and len(parts) >= 4:
+            civ, q, r = map(int, parts[1:4])
+            strength = 10
+            if len(parts) >= 6 and parts[4] == "--strength":
+                strength = int(parts[5])
+            eng.add_army(civ, (q, r), strength=strength)
+            eng.save_json(args.world)
+            print("Army spawned")
+        elif cmd == "target" and len(parts) >= 4:
+            idx, q, r = map(int, parts[1:4])
+            try:
+                army = eng.world.armies[idx]
+            except IndexError:
+                print("No such army")
+                continue
+            eng.set_army_target(army, (q, r))
+            eng.save_json(args.world)
+            print("Target set")
+        elif cmd == "summary":
+            print(eng.summary())
+        elif cmd in {"exit", "quit"}:
+            break
+        else:
+            print("Unknown command")
+
 def main():
     ap = argparse.ArgumentParser(description="Headless CLI for simulation")
     sub = ap.add_subparsers()
@@ -60,6 +135,11 @@ def main():
     ap_new.add_argument("--seed", type=int, default=12345)
     ap_new.add_argument("--min-pop", type=int, default=3)
     ap_new.add_argument("--max-pop", type=int, default=30)
+    ap_new.add_argument("--hex-size", type=int, default=1, help="Hex size in px")
+    ap_new.add_argument("--sea-percentile", type=float, default=0.35,
+                        help="Percentile of tiles considered sea")
+    ap_new.add_argument("--mountain-thresh", type=float, default=0.8,
+                        help="Height threshold for mountains")
     ap_new.add_argument("--civ", action="append", help="e.g. 'Rome:10,10' (can repeat)")
     ap_new.add_argument("--out", default="world.json")
     ap_new.set_defaults(func=cmd_new)
@@ -81,10 +161,26 @@ def main():
     ap_auto.set_defaults(func=cmd_autoplay)
 
     ap_exp = sub.add_parser("export", help="Render world to PNG images")
-    ap_exp.add_argument("world", nargs="?", default="world.json")
-    ap_exp.add_argument("--topdown", dest="topdown", default=None)
-    ap_exp.add_argument("--isometric", dest="isometric", default=None)
+    ap_exp.add_argument("--world", required=True, help="World JSON file")
+    ap_exp.add_argument("--topdown", required=True, help="Topdown PNG path")
+    ap_exp.add_argument("--isometric", default=None, help="Isometric PNG path")
     ap_exp.set_defaults(func=cmd_export)
+
+    ap_ts = sub.add_parser("set-timescale", help="Set simulation time scale")
+    ap_ts.add_argument("world")
+    ap_ts.add_argument("scale", choices=["week", "month", "year"])
+    ap_ts.set_defaults(func=cmd_set_timescale)
+
+    ap_date = sub.add_parser("set-date", help="Set calendar date")
+    ap_date.add_argument("world")
+    ap_date.add_argument("--year", type=int, required=True)
+    ap_date.add_argument("--month", type=int, required=True)
+    ap_date.add_argument("--day", type=int, required=True)
+    ap_date.set_defaults(func=cmd_set_date)
+
+    ap_repl = sub.add_parser("repl", help="Interactive REPL")
+    ap_repl.add_argument("world")
+    ap_repl.set_defaults(func=cmd_repl)
 
     args = ap.parse_args()
     if hasattr(args, "func"):
