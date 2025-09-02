@@ -6,6 +6,8 @@ import random
 
 from worldgen import apply_worldgen
 from hexgrid import neighbors6
+from hexgrid import distance as hex_distance
+from pathfinding import astar
 from time_model import Calendar, WEEK, MONTH, YEAR
 from resources import yields_for
 import math
@@ -33,6 +35,19 @@ class Civ:
     name: str
     stock_food: int = 0
     tiles: List[Coord] = field(default_factory=list)
+    armies: List["Army"] = field(default_factory=list)
+
+
+@dataclass
+class Army:
+    civ_id: int
+    q: int
+    r: int
+    strength: int = 10
+    target: Optional[Coord] = None
+    path: List[Coord] = field(default_factory=list)
+    supply: int = 100
+    speed_hexes_per_year: int = 12
 
 
 @dataclass
@@ -43,6 +58,7 @@ class World:
     sea_level: float
     tiles: List[TileHex]
     civs: Dict[int, Civ]
+    armies: List[Army] = field(default_factory=list)
     turn: int = 0
     seed: int = 42
     time_scale: str = "week"
@@ -118,6 +134,20 @@ class SimulationEngine:
         civ.tiles.append((q, r))
         return cid
 
+    def add_army(self, civ_id: int, at: Coord, strength: int = 10,
+                 supply: int = 100) -> Army:
+        q, r = at
+        if civ_id not in self.world.civs:
+            raise ValueError("Unknown civ")
+        army = Army(civ_id=civ_id, q=q, r=r, strength=strength, supply=supply)
+        self.world.armies.append(army)
+        self.world.civs[civ_id].armies.append(army)
+        return army
+
+    def set_army_target(self, army: Army, target: Coord) -> None:
+        army.target = target
+        army.path = astar(self.world, (army.q, army.r), target)
+
     def _next_civ_id(self) -> int:
         i = 0
         while i in self.world.civs:
@@ -174,6 +204,8 @@ class SimulationEngine:
             self._colonization_pass()
             w.colonize_elapsed %= w.colonize_period_years
 
+        self._advance_armies(dt)
+
         w.turn += 1
         w.calendar.advance_fraction(dt)
 
@@ -210,6 +242,68 @@ class SimulationEngine:
             civ = w.civs[cid]
             civ.tiles.append((dq, dr))
 
+    def _advance_armies(self, dt: float) -> None:
+        w = self.world
+        armies_copy = list(w.armies)
+        for army in armies_copy:
+            if army.target and (army.q, army.r) != army.target:
+                if not army.path or army.path and army.path[-1] != army.target:
+                    army.path = astar(w, (army.q, army.r), army.target)
+                steps = math.ceil(army.speed_hexes_per_year * dt)
+                for _ in range(steps):
+                    if not army.path:
+                        break
+                    nq, nr = army.path.pop(0)
+                    army.q, army.r = nq, nr
+
+            tile = w.get_tile(army.q, army.r)
+            civ_tiles = self.world.civs[army.civ_id].tiles
+            if civ_tiles:
+                min_dist = min(hex_distance(army.q, army.r, tq, tr) for tq, tr in civ_tiles)
+            else:
+                min_dist = float("inf")
+            if tile.biome == "mountain" or min_dist > 5:
+                army.supply = max(0, army.supply - 1)
+                if army.supply <= 0:
+                    army.strength = max(0, army.strength - 1)
+            if army.strength <= 0:
+                w.armies.remove(army)
+                self.world.civs[army.civ_id].armies.remove(army)
+
+        loc_map: Dict[Coord, List[Army]] = {}
+        for army in w.armies:
+            loc_map.setdefault((army.q, army.r), []).append(army)
+        for armies in loc_map.values():
+            civs = {a.civ_id for a in armies}
+            while len(civs) > 1 and len(armies) > 1:
+                armies.sort(key=lambda a: a.strength, reverse=True)
+                a1 = armies[0]
+                a2 = next((a for a in armies[1:] if a.civ_id != a1.civ_id), None)
+                if a2 is None:
+                    break
+                if a1.strength > a2.strength:
+                    a1.strength -= math.ceil(a2.strength * 0.5)
+                    armies.remove(a2)
+                    w.armies.remove(a2)
+                    self.world.civs[a2.civ_id].armies.remove(a2)
+                elif a2.strength > a1.strength:
+                    a2.strength -= math.ceil(a1.strength * 0.5)
+                    armies.remove(a1)
+                    w.armies.remove(a1)
+                    self.world.civs[a1.civ_id].armies.remove(a1)
+                else:
+                    a1.strength -= 1
+                    a2.strength -= 1
+                    if a1.strength <= 0:
+                        armies.remove(a1)
+                        w.armies.remove(a1)
+                        self.world.civs[a1.civ_id].armies.remove(a1)
+                    if a2.strength <= 0:
+                        armies.remove(a2)
+                        w.armies.remove(a2)
+                        self.world.civs[a2.civ_id].armies.remove(a2)
+                civs = {a.civ_id for a in armies}
+
     def summary(self) -> Dict:
         w = self.world
         pop_total = sum(t.pop for t in w.tiles)
@@ -244,7 +338,10 @@ class SimulationEngine:
                       for t in w.tiles],
             "civs": {str(cid): {"civ_id": c.civ_id, "name": c.name, "stock_food": c.stock_food,
                                  "tiles": c.tiles}
-                     for cid, c in w.civs.items()}
+                     for cid, c in w.civs.items()},
+            "armies": [{"civ_id": a.civ_id, "q": a.q, "r": a.r, "strength": a.strength,
+                         "target": a.target, "supply": a.supply}
+                        for a in w.armies],
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f)
@@ -285,5 +382,15 @@ class SimulationEngine:
                       tiles=[tuple(t) for t in cd["tiles"]])
             civs[civ.civ_id] = civ
         w.civs = civs
+        armies: List[Army] = []
+        for ad in data.get("armies", []):
+            a = Army(civ_id=ad["civ_id"], q=ad["q"], r=ad["r"],
+                     strength=ad.get("strength", 10),
+                     target=tuple(ad["target"]) if ad.get("target") else None,
+                     supply=ad.get("supply", 100))
+            armies.append(a)
+            if a.civ_id in w.civs:
+                w.civs[a.civ_id].armies.append(a)
+        w.armies = armies
         self.world = w
         self.rng = random.Random(w.seed)
