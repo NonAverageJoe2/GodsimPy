@@ -47,6 +47,8 @@ class World:
     seed: int = 42
     time_scale: str = "week"
     calendar: Calendar = field(default_factory=Calendar)
+    colonize_period_years: float = 0.25
+    colonize_elapsed: float = 0.0
 
     @property
     def width(self) -> int:  # compat
@@ -167,30 +169,46 @@ class SimulationEngine:
             civ = w.civs[cid]
             civ.stock_food = max(0, min(civ.stock_food + int(g), POP_MAX))
 
-        # Colonization: spend 10 food to claim adjacent unowned tiles, prefer higher pop
-        for civ in w.civs.values():
-            tried = 0
-            frontier: List[Coord] = []
-            for (q, r) in civ.tiles:
-                for nq, nr in w.neighbors6(q, r):
-                    tt = w.get_tile(nq, nr)
-                    if tt.owner is None:
-                        frontier.append((nq, nr))
-            frontier.sort(key=lambda c: w.get_tile(*c).pop, reverse=True)
-            for (fq, fr) in frontier:
-                if civ.stock_food < 10:
-                    break
-                tt = w.get_tile(fq, fr)
-                if tt.owner is None:
-                    tt.owner = civ.civ_id
-                    civ.tiles.append((fq, fr))
-                    civ.stock_food -= 10
-                    tried += 1
-                if tried >= 3:
-                    break
+        w.colonize_elapsed += dt
+        if w.colonize_elapsed >= w.colonize_period_years:
+            self._colonization_pass()
+            w.colonize_elapsed %= w.colonize_period_years
 
         w.turn += 1
         w.calendar.advance_fraction(dt)
+
+    def _colonization_pass(self) -> None:
+        w = self.world
+        POP_THRESHOLD = 50
+        SETTLER_COST = 10
+        actions: List[Tuple[int, Coord, Coord]] = []
+        claimed: set[Coord] = set()
+        for cid in sorted(w.civs.keys()):
+            civ = w.civs[cid]
+            for (q, r) in sorted(civ.tiles):
+                t = w.get_tile(q, r)
+                if t.pop < POP_THRESHOLD:
+                    continue
+                neighbors = sorted(w.neighbors6(q, r))
+                for nq, nr in neighbors:
+                    if (nq, nr) in claimed:
+                        continue
+                    tt = w.get_tile(nq, nr)
+                    if tt.owner is None:
+                        actions.append((cid, (q, r), (nq, nr)))
+                        claimed.add((nq, nr))
+                        break
+        for cid, (sq, sr), (dq, dr) in actions:
+            src = w.get_tile(sq, sr)
+            dst = w.get_tile(dq, dr)
+            src.pop = max(0, src.pop - SETTLER_COST)
+            if hasattr(src, "_pop_float"):
+                src._pop_float = float(src.pop)
+            dst.owner = cid
+            dst.pop = SETTLER_COST
+            dst._pop_float = float(dst.pop)
+            civ = w.civs[cid]
+            civ.tiles.append((dq, dr))
 
     def summary(self) -> Dict:
         w = self.world
@@ -219,6 +237,8 @@ class SimulationEngine:
             "turn": w.turn, "seed": w.seed,
             "time_scale": w.time_scale,
             "calendar": {"year": w.calendar.year, "month": w.calendar.month, "day": w.calendar.day},
+            "colonize_period_years": w.colonize_period_years,
+            "colonize_elapsed": w.colonize_elapsed,
             "tiles": [{"q": t.q, "r": t.r, "height": t.height, "biome": t.biome,
                        "pop": t.pop, "owner": t.owner, "feature": t.feature}
                       for t in w.tiles],
@@ -239,7 +259,9 @@ class SimulationEngine:
             w = World(width_hex=data["width_hex"], height_hex=data["height_hex"],
                       hex_size=data.get("hex_size", 1), sea_level=data.get("sea_level", 0.0),
                       tiles=[], civs={}, turn=turn, seed=data["seed"],
-                      time_scale=time_scale, calendar=Calendar(**cal_data))
+                      time_scale=time_scale, calendar=Calendar(**cal_data),
+                      colonize_period_years=data.get("colonize_period_years", 0.25),
+                      colonize_elapsed=data.get("colonize_elapsed", 0.0))
             tiles = [TileHex(q=td["q"], r=td["r"], height=td.get("height", 0.0),
                              biome=td.get("biome", "ocean"), pop=td.get("pop", 0),
                              owner=td.get("owner"), feature=td.get("feature"))
@@ -248,7 +270,9 @@ class SimulationEngine:
             w = World(width_hex=data["width"], height_hex=data["height"],
                       hex_size=data.get("hex_size", 1), sea_level=data.get("sea_level", 0.0),
                       tiles=[], civs={}, turn=turn, seed=data["seed"],
-                      time_scale=time_scale, calendar=Calendar(**cal_data))
+                      time_scale=time_scale, calendar=Calendar(**cal_data),
+                      colonize_period_years=data.get("colonize_period_years", 0.25),
+                      colonize_elapsed=data.get("colonize_elapsed", 0.0))
             tiles = [TileHex(q=td.get("q", td["x"]), r=td.get("r", td["y"]),
                              height=td.get("height", 0.0), biome=td.get("biome", "ocean"),
                              pop=td.get("pop", 0), owner=td.get("owner"),
