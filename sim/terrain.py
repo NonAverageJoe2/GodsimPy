@@ -36,6 +36,16 @@ _DESCRIPTIONS = {
     int(JUNGLE_HILLS): "Jungle Hills",
 }
 
+# Stable default placement probabilities
+DEFAULT_P: dict[str, float] = {
+    "forest": 0.12,
+    "jungle": 0.08,
+    "marsh": 0.05,
+    "hills": 0.20,
+    "oasis": 0.02,
+    "sand": 0.35,
+}
+
 
 def describe_feature(fid: int) -> str:
     """Return a human-readable description for ``fid``."""
@@ -43,7 +53,11 @@ def describe_feature(fid: int) -> str:
 
 
 def _rand_mask(rng: np.random.Generator, shape: tuple[int, int], prob: float) -> np.ndarray:
-    """Helper to draw a boolean mask with probability ``prob``."""
+    """Helper to draw a boolean mask with probability ``prob``.
+
+    ``prob`` is clamped to the inclusive range ``[0, 1]``.
+    """
+    prob = float(np.clip(prob, 0.0, 1.0))
     if prob <= 0.0:
         return np.zeros(shape, dtype=bool)
     if prob >= 1.0:
@@ -51,8 +65,11 @@ def _rand_mask(rng: np.random.Generator, shape: tuple[int, int], prob: float) ->
     return rng.random(shape) < prob
 
 
-def generate_features(biome: np.ndarray, rng: np.random.Generator,
-                      p: dict[str, float]) -> np.ndarray:
+def generate_features(
+    biome: np.ndarray,
+    rng: np.random.Generator,
+    p: dict[str, float] | None = None,
+) -> np.ndarray:
     """Generate terrain features for ``biome``.
 
     Parameters
@@ -62,8 +79,8 @@ def generate_features(biome: np.ndarray, rng: np.random.Generator,
     rng:
         NumPy ``Generator`` used for randomness.
     p:
-        Mapping from feature name to placement probability. Missing keys default
-        to 0.0.
+        Optional mapping from feature name to placement probability. Missing
+        keys fall back to :data:`DEFAULT_P`.
 
     Returns
     -------
@@ -77,33 +94,36 @@ def generate_features(biome: np.ndarray, rng: np.random.Generator,
     H, W = b.shape
     out = np.zeros((H, W), dtype=np.uint8)
 
+    # Merge probabilities with defaults
+    pp = {**DEFAULT_P, **(p or {})}
+
     # Masks for biome categories
     grass = b == BIOME_GRASS
     sand_bio = b == BIOME_SAND
     land = (b != BIOME_OCEAN) & (b != BIOME_MOUNTAIN)
 
     # Exclusive features on grass
-    marsh_mask = grass & _rand_mask(rng, (H, W), p.get("marsh", 0.0))
+    marsh_mask = grass & _rand_mask(rng, (H, W), pp["marsh"])
     out[marsh_mask] = MARSH
     available_grass = grass & ~marsh_mask
 
-    forest_mask = available_grass & _rand_mask(rng, (H, W), p.get("forest", 0.0))
+    forest_mask = available_grass & _rand_mask(rng, (H, W), pp["forest"])
     out[forest_mask] = FOREST
     available_grass &= ~forest_mask
 
-    jungle_mask = available_grass & _rand_mask(rng, (H, W), p.get("jungle", 0.0))
+    jungle_mask = available_grass & _rand_mask(rng, (H, W), pp["jungle"])
     out[jungle_mask] = JUNGLE
 
     # Exclusive features on sand biome
-    oasis_mask = sand_bio & _rand_mask(rng, (H, W), p.get("oasis", 0.0))
+    oasis_mask = sand_bio & _rand_mask(rng, (H, W), pp["oasis"])
     out[oasis_mask] = OASIS
     available_sand = sand_bio & ~oasis_mask
 
-    sand_mask = available_sand & _rand_mask(rng, (H, W), p.get("sand", 0.0))
+    sand_mask = available_sand & _rand_mask(rng, (H, W), pp["sand"])
     out[sand_mask] = SAND
 
     # Hills - may stack with forest/jungle
-    hills_mask = land & _rand_mask(rng, (H, W), p.get("hills", 0.0))
+    hills_mask = land & _rand_mask(rng, (H, W), pp["hills"])
     hills_mask &= (out == NONE) | (out == FOREST) | (out == JUNGLE)
 
     forest_hills = hills_mask & (out == FOREST)
@@ -118,4 +138,5 @@ def generate_features(biome: np.ndarray, rng: np.random.Generator,
     # Ensure ocean and mountain tiles have no features
     out[(b == BIOME_OCEAN) | (b == BIOME_MOUNTAIN)] = NONE
 
+    out = np.ascontiguousarray(out, dtype=np.uint8)
     return out
