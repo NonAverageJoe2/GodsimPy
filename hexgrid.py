@@ -28,6 +28,40 @@ def axial_to_pixel(q: int, r: int, hex_size: float) -> Tuple[float, float]:
     y = SQRT3 * hex_size * (r + 0.5 * q)
     return x, y
 
+
+def pixel_to_axial(x: float, y: float, hex_size: float) -> Tuple[int, int]:
+    """Approximate inverse of :func:`axial_to_pixel` for flat-top hexes.
+
+    The returned axial coordinates are rounded to the nearest hex tile.
+    ``hex_size`` must match the size used in :func:`axial_to_pixel`.
+    """
+
+    if hex_size == 0:
+        raise ValueError("hex_size must be non-zero")
+
+    # Fractional axial coordinates
+    fq = (2.0 / 3.0) * x / hex_size
+    fr = ((-1.0 / 3.0) * x + (SQRT3 / 3.0) * y) / hex_size
+
+    # Convert to cube and round to nearest
+    fs = -fq - fr
+    rq = round(fq)
+    rr = round(fr)
+    rs = round(fs)
+
+    dq = abs(rq - fq)
+    dr = abs(rr - fr)
+    ds = abs(rs - fs)
+
+    if dq > dr and dq > ds:
+        rq = -rr - rs
+    elif dr > ds:
+        rr = -rq - rs
+    else:
+        rs = -rq - rr
+
+    return int(rq), int(rr)
+
 # Alias used by worldgen/render code
 axial_to_world_flat = axial_to_pixel
 
