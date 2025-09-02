@@ -24,6 +24,13 @@ class WorldState:
     sea_level: float
     hex_radius: float
 
+    # Calendar and simulation control fields
+    date_month: int = 1
+    date_day: int = 1
+    date_year: int = 1
+    time_scale: str = "week"
+    paused: bool = False
+
     def __post_init__(self) -> None:
         expected = (self.height, self.width)
         checks = (
@@ -38,6 +45,23 @@ class WorldState:
             if arr.dtype != dtype:
                 raise ValueError(f"{name} dtype {arr.dtype} != {dtype}")
 
+        if self.date_month < 1 or self.date_day < 1 or self.date_year < 1:
+            raise ValueError("date components must be >=1")
+        if self.time_scale not in {"week", "month", "year"}:
+            raise ValueError(f"invalid time_scale {self.time_scale!r}")
+
+    def get_date_tuple(self) -> tuple[int, int, int]:
+        """Return (month, day, year) tuple."""
+        return (self.date_month, self.date_day, self.date_year)
+
+    def set_date_tuple(self, m: int, d: int, y: int) -> None:
+        """Update date fields after validating positivity."""
+        if m < 1 or d < 1 or y < 1:
+            raise ValueError("date components must be >=1")
+        self.date_month = int(m)
+        self.date_day = int(d)
+        self.date_year = int(y)
+
     def to_dict(self) -> Dict[str, Any]:
         """Return a serializable dictionary matching NPZ keys."""
         return {
@@ -51,6 +75,11 @@ class WorldState:
             "biome_map": self.biome_map,
             "owner_map": self.owner_map,
             "pop_map": self.pop_map,
+            "date_m": np.int32(self.date_month),
+            "date_d": np.int32(self.date_day),
+            "date_y": np.int32(self.date_year),
+            "time_scale": self.time_scale,
+            "paused": np.bool_(self.paused),
         }
 
     @classmethod
@@ -80,6 +109,25 @@ class WorldState:
         hex_radius = float(data["hex_radius"])
         expected = (height, width)
 
+        date_m = int(data.get("date_m", 1))
+        date_d = int(data.get("date_d", 1))
+        date_y = int(data.get("date_y", 1))
+        if date_m < 1 or date_d < 1 or date_y < 1:
+            raise ValueError("date components must be >=1")
+
+        time_scale = str(data.get("time_scale", "week"))
+        if time_scale not in {"week", "month", "year"}:
+            raise ValueError(f"invalid time_scale {time_scale!r}")
+
+        p_val = data.get("paused", False)
+        if isinstance(p_val, np.ndarray):
+            if p_val.shape != ():
+                raise ValueError("paused must be scalar")
+            p_val = p_val.item()
+        if not isinstance(p_val, (bool, np.bool_, int, np.integer)):
+            raise ValueError("paused must be boolean")
+        paused = bool(p_val)
+
         def check(name: str, arr: Any, dtype: np.dtype) -> np.ndarray:
             a = np.asarray(arr)
             if a.shape != expected:
@@ -104,6 +152,11 @@ class WorldState:
             pop_map=pop_map,
             sea_level=sea_level,
             hex_radius=hex_radius,
+            date_month=date_m,
+            date_day=date_d,
+            date_year=date_y,
+            time_scale=time_scale,
+            paused=paused,
         )
 
 
@@ -147,6 +200,11 @@ def save_npz(ws: WorldState, path: str) -> None:
         biome_map=ws.biome_map,
         owner_map=ws.owner_map,
         pop_map=ws.pop_map,
+        date_m=np.array(ws.date_month, dtype=np.int32),
+        date_d=np.array(ws.date_day, dtype=np.int32),
+        date_y=np.array(ws.date_year, dtype=np.int32),
+        time_scale=np.array(ws.time_scale),
+        paused=np.array(ws.paused, dtype=np.bool_),
     )
 
 
@@ -177,6 +235,41 @@ def load_npz(path: str) -> WorldState:
         hex_radius = float(data["hex_radius"])
         expected = (height, width)
 
+        date_m = 1
+        if "date_m" in data.files:
+            date_m = int(data["date_m"])
+            if date_m < 1:
+                raise ValueError("date components must be >=1")
+
+        date_d = 1
+        if "date_d" in data.files:
+            date_d = int(data["date_d"])
+            if date_d < 1:
+                raise ValueError("date components must be >=1")
+
+        date_y = 1
+        if "date_y" in data.files:
+            date_y = int(data["date_y"])
+            if date_y < 1:
+                raise ValueError("date components must be >=1")
+
+        time_scale = "week"
+        if "time_scale" in data.files:
+            time_scale = str(data["time_scale"])
+            if time_scale not in {"week", "month", "year"}:
+                raise ValueError(f"invalid time_scale {time_scale!r}")
+
+        paused = False
+        if "paused" in data.files:
+            p_val = data["paused"]
+            if isinstance(p_val, np.ndarray):
+                if p_val.shape != ():
+                    raise ValueError("paused must be scalar")
+                p_val = p_val.item()
+            if not isinstance(p_val, (bool, np.bool_, int, np.integer)):
+                raise ValueError("paused must be boolean")
+            paused = bool(p_val)
+
         def fetch(name: str, dtype: np.dtype) -> np.ndarray:
             arr = data[name]
             if arr.shape != expected:
@@ -201,4 +294,9 @@ def load_npz(path: str) -> WorldState:
         pop_map=pop_map,
         sea_level=sea_level,
         hex_radius=hex_radius,
+        date_month=date_m,
+        date_day=date_d,
+        date_year=date_y,
+        time_scale=time_scale,
+        paused=paused,
     )
