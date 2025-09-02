@@ -1,5 +1,7 @@
 import argparse
+
 from engine import SimulationEngine
+import render
 
 def cmd_new(args):
     eng = SimulationEngine(width=args.width, height=args.height, seed=args.seed)
@@ -37,6 +39,17 @@ def cmd_autoplay(args):
         print(f"Saved to {args.save}")
     print("Auto-play complete.", eng.summary())
 
+
+def cmd_export(args):
+    eng = SimulationEngine()
+    eng.load_json(args.world)
+    if args.topdown:
+        render.render_topdown(eng.world, args.topdown)
+        print(f"Saved {args.topdown}")
+    if args.isometric:
+        render.render_isometric(eng.world, args.isometric)
+        print(f"Saved {args.isometric}")
+
 def main():
     ap = argparse.ArgumentParser(description="Headless CLI for simulation")
     sub = ap.add_subparsers()
@@ -66,6 +79,12 @@ def main():
     ap_auto.add_argument("--weeks", type=int, default=52)
     ap_auto.add_argument("--save", default=None)
     ap_auto.set_defaults(func=cmd_autoplay)
+
+    ap_exp = sub.add_parser("export", help="Render world to PNG images")
+    ap_exp.add_argument("world", nargs="?", default="world.json")
+    ap_exp.add_argument("--topdown", dest="topdown", default=None)
+    ap_exp.add_argument("--isometric", dest="isometric", default=None)
+    ap_exp.set_defaults(func=cmd_export)
 
     args = ap.parse_args()
     if hasattr(args, "func"):

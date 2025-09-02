@@ -2,8 +2,8 @@
 from __future__ import annotations
 import argparse, os, numpy as np
 from biomes import build_biomes
-from render_topdown import render_topdown
-from render_iso import render_iso
+from engine import SimulationEngine
+from render import render_topdown, render_isometric
 from worldgen import build_world
 
 def run(args):
@@ -13,21 +13,35 @@ def run(args):
     )
     biomes = build_biomes(height, sea, args.mountain_h)
 
+    eng = SimulationEngine(width=w, height=h, seed=args.seed, hex_size=int(args.hex_radius))
+    idx = 0
+    for r in range(h):
+        for q in range(w):
+            t = eng.world.tiles[idx]
+            t.height = float(height[r, q])
+            t.biome = str(biomes[r, q])
+            idx += 1
+
     os.makedirs(args.out, exist_ok=True)
-    np.savez_compressed(os.path.join(args.out, "world_data.npz"),
-                        height=height, biome=biomes, plate_map=plate_map,
-                        sea_level=np.array([sea], dtype=np.float32),
-                        width=np.array([w], dtype=np.int32),
-                        height_cells=np.array([h], dtype=np.int32))
+    np.savez_compressed(
+        os.path.join(args.out, "world_data.npz"),
+        height=height,
+        biome=biomes,
+        plate_map=plate_map,
+        sea_level=np.array([sea], dtype=np.float32),
+        width=np.array([w], dtype=np.int32),
+        height_cells=np.array([h], dtype=np.int32),
+    )
 
-    img_td = render_topdown(biomes, radius=args.hex_radius, scale=4)
-    img_td.save(os.path.join(args.out, "topdown.png"))
-
-    img_iso = render_iso(height, biomes, radius=args.hex_radius,
-                         height_pixels=args.height_pixels,
-                         yaw_deg=args.yaw, tilt_deg=args.tilt,
-                         supersample=args.ss)
-    img_iso.save(os.path.join(args.out, "iso_corner.png"))
+    render_topdown(eng.world, os.path.join(args.out, "topdown.png"))
+    render_isometric(
+        eng.world,
+        os.path.join(args.out, "iso_corner.png"),
+        height_pixels=args.height_pixels,
+        yaw_deg=args.yaw,
+        tilt_deg=args.tilt,
+        supersample=args.ss,
+    )
 
     print("Saved:", os.path.join(args.out, "world_data.npz"))
     print("Saved:", os.path.join(args.out, "topdown.png"))
