@@ -1,2 +1,5 @@
+pygame
+pytest
 numpy
+noise
 Pillow
