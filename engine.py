@@ -4,14 +4,24 @@ from typing import List, Dict, Tuple, Optional
 import json
 import random
 
+from hexgrid import neighbors6
+
 Coord = Tuple[int, int]
 
+
 @dataclass
-class Tile:
-    x: int
-    y: int
+class TileHex:
+    q: int
+    r: int
+    height: float = 0.0
+    biome: str = "ocean"
     pop: int = 0
     owner: Optional[int] = None  # civ_id or None
+    feature: Optional[str] = None
+
+# Backwards compatibility
+Tile = TileHex
+
 
 @dataclass
 class Civ:
@@ -20,40 +30,57 @@ class Civ:
     stock_food: int = 0
     tiles: List[Coord] = field(default_factory=list)
 
+
 @dataclass
 class World:
-    width: int
-    height: int
-    tiles: List[Tile]
+    width_hex: int
+    height_hex: int
+    hex_size: int
+    sea_level: float
+    tiles: List[TileHex]
     civs: Dict[int, Civ]
     week: int = 0
     seed: int = 42
 
-    def idx(self, x: int, y: int) -> int:
-        if x < 0 or y < 0 or x >= self.width or y >= self.height:
+    @property
+    def width(self) -> int:  # compat
+        return self.width_hex
+
+    @property
+    def height(self) -> int:  # compat
+        return self.height_hex
+
+    def idx(self, q: int, r: int) -> int:
+        if q < 0 or r < 0 or q >= self.width_hex or r >= self.height_hex:
             raise IndexError("tile OOB")
-        return y * self.width + x
+        return r * self.width_hex + q
 
-    def get_tile(self, x: int, y: int) -> Tile:
-        return self.tiles[self.idx(x, y)]
+    def get_tile(self, q: int, r: int) -> TileHex:
+        return self.tiles[self.idx(q, r)]
 
-    def neighbors4(self, x: int, y: int) -> List[Coord]:
+    def in_bounds(self, q: int, r: int) -> bool:
+        return 0 <= q < self.width_hex and 0 <= r < self.height_hex
+
+    def neighbors6(self, q: int, r: int) -> List[Coord]:
         out: List[Coord] = []
-        for dx, dy in ((1,0),(-1,0),(0,1),(0,-1)):
-            nx, ny = x + dx, y + dy
-            if 0 <= nx < self.width and 0 <= ny < self.height:
-                out.append((nx, ny))
+        for nq, nr in neighbors6(q, r):
+            if self.in_bounds(nq, nr):
+                out.append((nq, nr))
         return out
+
 
 class SimulationEngine:
     """Pure-sim API usable by CLI, GUI, and tests."""
-    def __init__(self, width: int = 48, height: int = 32, seed: int = 12345):
-        self.rng = random.Random(seed)
-        self.world = self._new_world(width, height, seed)
 
-    def _new_world(self, w: int, h: int, seed: int) -> World:
-        tiles = [Tile(x=i % w, y=i // w, pop=0, owner=None) for i in range(w*h)]
-        return World(width=w, height=h, tiles=tiles, civs={}, week=0, seed=seed)
+    def __init__(self, width: int = 48, height: int = 32, seed: int = 12345,
+                 hex_size: int = 1, sea_level: float = 0.0):
+        self.rng = random.Random(seed)
+        self.world = self._new_world(width, height, seed, hex_size, sea_level)
+
+    def _new_world(self, w: int, h: int, seed: int, hex_size: int, sea_level: float) -> World:
+        tiles = [TileHex(q=i % w, r=i // w) for i in range(w * h)]
+        return World(width_hex=w, height_hex=h, hex_size=hex_size,
+                     sea_level=sea_level, tiles=tiles, civs={}, week=0, seed=seed)
 
     def seed_population_everywhere(self, min_pop=3, max_pop=30) -> None:
         for t in self.world.tiles:
@@ -61,17 +88,17 @@ class SimulationEngine:
             t.owner = None
 
     def add_civ(self, name: str, at: Coord) -> int:
-        if not self._in_bounds(at):
+        q, r = at
+        if not self.world.in_bounds(q, r):
             raise ValueError("Civ spawn out of bounds")
         cid = self._next_civ_id()
         civ = Civ(civ_id=cid, name=name, stock_food=50, tiles=[])
         self.world.civs[cid] = civ
-        x, y = at
-        t = self.world.get_tile(x, y)
+        t = self.world.get_tile(q, r)
         if t.owner is not None and t.owner != cid:
             pass  # allow coexist; must colonize later
         t.owner = cid
-        civ.tiles.append(at)
+        civ.tiles.append((q, r))
         return cid
 
     def _next_civ_id(self) -> int:
@@ -80,17 +107,13 @@ class SimulationEngine:
             i += 1
         return i
 
-    def _in_bounds(self, c: Coord) -> bool:
-        x, y = c
-        return 0 <= x < self.world.width and 0 <= y < self.world.height
-
     def advance_week(self) -> None:
         w = self.world
         # Production
         for civ in w.civs.values():
             gain = 0
-            for (x, y) in civ.tiles:
-                t = w.get_tile(x, y)
+            for (q, r) in civ.tiles:
+                t = w.get_tile(q, r)
                 gain += max(0, t.pop // 2)
             civ.stock_food += gain
 
@@ -105,19 +128,19 @@ class SimulationEngine:
         for civ in w.civs.values():
             tried = 0
             frontier: List[Coord] = []
-            for (x, y) in civ.tiles:
-                for nx, ny in w.neighbors4(x, y):
-                    tt = w.get_tile(nx, ny)
+            for (q, r) in civ.tiles:
+                for nq, nr in w.neighbors6(q, r):
+                    tt = w.get_tile(nq, nr)
                     if tt.owner is None:
-                        frontier.append((nx, ny))
+                        frontier.append((nq, nr))
             frontier.sort(key=lambda c: w.get_tile(*c).pop, reverse=True)
-            for (fx, fy) in frontier:
+            for (fq, fr) in frontier:
                 if civ.stock_food < 10:
                     break
-                tt = w.get_tile(fx, fy)
+                tt = w.get_tile(fq, fr)
                 if tt.owner is None:
                     tt.owner = civ.civ_id
-                    civ.tiles.append((fx, fy))
+                    civ.tiles.append((fq, fr))
                     civ.stock_food -= 10
                     tried += 1
                 if tried >= 3:
@@ -131,7 +154,7 @@ class SimulationEngine:
         owned = sum(1 for t in w.tiles if t.owner is not None)
         return {
             "week": w.week,
-            "width": w.width, "height": w.height,
+            "width": w.width_hex, "height": w.height_hex,
             "total_pop": pop_total,
             "owned_tiles": owned,
             "civs": {
@@ -143,9 +166,18 @@ class SimulationEngine:
     def save_json(self, path: str) -> None:
         w = self.world
         data = {
-            "width": w.width, "height": w.height, "week": w.week, "seed": w.seed,
-            "tiles": [{"x": t.x, "y": t.y, "pop": t.pop, "owner": t.owner} for t in w.tiles],
-            "civs": {str(cid): {"civ_id": c.civ_id, "name": c.name, "stock_food": c.stock_food, "tiles": c.tiles}
+            "width_hex": w.width_hex,
+            "height_hex": w.height_hex,
+            "width": w.width_hex,
+            "height": w.height_hex,
+            "hex_size": w.hex_size,
+            "sea_level": w.sea_level,
+            "week": w.week, "seed": w.seed,
+            "tiles": [{"q": t.q, "r": t.r, "height": t.height, "biome": t.biome,
+                       "pop": t.pop, "owner": t.owner, "feature": t.feature}
+                      for t in w.tiles],
+            "civs": {str(cid): {"civ_id": c.civ_id, "name": c.name, "stock_food": c.stock_food,
+                                 "tiles": c.tiles}
                      for cid, c in w.civs.items()}
         }
         with open(path, "w", encoding="utf-8") as f:
@@ -154,8 +186,23 @@ class SimulationEngine:
     def load_json(self, path: str) -> None:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        w = World(width=data["width"], height=data["height"], tiles=[], civs={}, week=data["week"], seed=data["seed"])
-        tiles = [Tile(x=td["x"], y=td["y"], pop=td["pop"], owner=td["owner"]) for td in data["tiles"]]
+        if "width_hex" in data:
+            w = World(width_hex=data["width_hex"], height_hex=data["height_hex"],
+                      hex_size=data.get("hex_size", 1), sea_level=data.get("sea_level", 0.0),
+                      tiles=[], civs={}, week=data["week"], seed=data["seed"])
+            tiles = [TileHex(q=td["q"], r=td["r"], height=td.get("height", 0.0),
+                             biome=td.get("biome", "ocean"), pop=td.get("pop", 0),
+                             owner=td.get("owner"), feature=td.get("feature"))
+                     for td in data["tiles"]]
+        else:
+            w = World(width_hex=data["width"], height_hex=data["height"],
+                      hex_size=data.get("hex_size", 1), sea_level=data.get("sea_level", 0.0),
+                      tiles=[], civs={}, week=data["week"], seed=data["seed"])
+            tiles = [TileHex(q=td.get("q", td["x"]), r=td.get("r", td["y"]),
+                             height=td.get("height", 0.0), biome=td.get("biome", "ocean"),
+                             pop=td.get("pop", 0), owner=td.get("owner"),
+                             feature=td.get("feature"))
+                     for td in data["tiles"]]
         w.tiles = tiles
         civs: Dict[int, Civ] = {}
         for _, cd in data["civs"].items():
