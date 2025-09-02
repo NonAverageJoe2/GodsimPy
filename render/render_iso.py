@@ -28,9 +28,23 @@ def _hex_prism(x: float, z: float, radius: float, hpx: float):
 def _project(P: np.ndarray) -> np.ndarray:
     return np.stack([P[:,0], -P[:,1]], axis=1)
 
-def render_iso(height: np.ndarray, biome: np.ndarray, radius: float,
-               height_pixels: float = 36.0, yaw_deg: float = 45.0, tilt_deg: float = 35.264,
-               supersample: int = 1) -> Image.Image:
+def render_iso(
+    height: np.ndarray,
+    biome: np.ndarray,
+    radius: float,
+    sea_level: float = 0.0,
+    height_pixels: float = 36.0,
+    yaw_deg: float = 45.0,
+    tilt_deg: float = 35.264,
+    supersample: int = 1,
+) -> Image.Image:
+    """Render a simple corner-view isometric projection.
+
+    ``sea_level`` is subtracted from the height map so that ocean tiles
+    appear flat while land rises above the water level.  This makes the
+    height differences visible in the final render.
+    """
+
     H, W = height.shape
     R = _rot_x(math.radians(tilt_deg)) @ _rot_y(math.radians(yaw_deg))
 
@@ -69,7 +83,8 @@ def render_iso(height: np.ndarray, biome: np.ndarray, radius: float,
     order.sort()
 
     for _, q, r in order:
-        h01 = float(max(height[r, q], 0.0))
+        # Normalize height relative to sea level so water stays flat
+        h01 = float(max(height[r, q] - sea_level, 0.0))
         hpx = max(h01 * height_pixels, 1.0)
         x, z = axial_to_world_flat(q, r, radius)
         base, top = _hex_prism(x, z, radius, hpx)
