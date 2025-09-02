@@ -4,6 +4,7 @@ from typing import List, Dict, Tuple, Optional
 import json
 import random
 
+from worldgen import apply_worldgen
 from hexgrid import neighbors6
 from time_model import Calendar, WEEK, MONTH, YEAR
 
@@ -79,12 +80,20 @@ class SimulationEngine:
                  hex_size: int = 1, sea_level: float = 0.0):
         self.rng = random.Random(seed)
         self.world = self._new_world(width, height, seed, hex_size, sea_level)
+        # Populate the world's terrain deterministically from the seed
+        self.init_worldgen()
 
     def _new_world(self, w: int, h: int, seed: int, hex_size: int, sea_level: float) -> World:
         tiles = [TileHex(q=i % w, r=i // w) for i in range(w * h)]
         return World(width_hex=w, height_hex=h, hex_size=hex_size,
                      sea_level=sea_level, tiles=tiles, civs={},
                      turn=0, seed=seed)
+
+    def init_worldgen(self, sea_percentile: float = 0.35,
+                      mountain_thresh: float = 0.8) -> None:
+        """(Re)generate world terrain and biomes using deterministic worldgen."""
+        apply_worldgen(self, sea_percentile=sea_percentile,
+                       mountain_thresh=mountain_thresh)
 
     def seed_population_everywhere(self, min_pop=3, max_pop=30) -> None:
         for t in self.world.tiles:
