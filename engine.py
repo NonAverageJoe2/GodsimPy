@@ -7,6 +7,8 @@ import random
 from worldgen import apply_worldgen
 from hexgrid import neighbors6
 from time_model import Calendar, WEEK, MONTH, YEAR
+from resources import yields_for
+import math
 
 Coord = Tuple[int, int]
 
@@ -128,23 +130,42 @@ class SimulationEngine:
             return MONTH
         return YEAR
 
-    def advance_turn(self) -> None:
+    def advance_turn(self, dt: float | None = None) -> None:
         w = self.world
-        dt = self.delta_years()
-        # Production
-        for civ in w.civs.values():
-            gain = 0
-            for (q, r) in civ.tiles:
-                t = w.get_tile(q, r)
-                gain += max(0, t.pop // 2)
-            civ.stock_food += gain
+        if dt is None:
+            dt = self.delta_years()
 
-        # Natural growth
+        BASE_K = 100.0
+        R = 0.5  # intrinsic growth rate per year
+        POP_MAX = 1_000_000_000
+
+        gains = {cid: 0.0 for cid in w.civs}
+
         for t in w.tiles:
-            if t.pop > 0:
-                t.pop += self.rng.choice([0, 0, 1])
-                if t.pop > 9999:
-                    t.pop = 9999
+            food_yield, _ = yields_for(t)
+            if t.owner is not None:
+                gains[t.owner] += food_yield * dt
+
+            if not hasattr(t, "_pop_float"):
+                t._pop_float = float(t.pop)
+
+            K = BASE_K * food_yield
+            K_eff = max(K, 1.0)
+            if t._pop_float > 0:
+                ratio = (K_eff - t._pop_float) / t._pop_float
+                t._pop_float = K_eff / (1.0 + ratio * math.exp(-R * dt))
+            else:
+                t._pop_float = 0.0
+            pop_int = math.floor(t._pop_float)
+            if pop_int < 0:
+                pop_int = 0
+            if pop_int > POP_MAX:
+                pop_int = POP_MAX
+            t.pop = int(pop_int)
+
+        for cid, g in gains.items():
+            civ = w.civs[cid]
+            civ.stock_food = max(0, min(civ.stock_food + int(g), POP_MAX))
 
         # Colonization: spend 10 food to claim adjacent unowned tiles, prefer higher pop
         for civ in w.civs.values():
