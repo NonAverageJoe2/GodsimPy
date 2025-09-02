@@ -1,5 +1,4 @@
+numpy
+Pillow
 pygame
 pytest
-numpy
-noise
-Pillow
