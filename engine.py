@@ -5,6 +5,7 @@ import json
 import random
 
 from hexgrid import neighbors6
+from time_model import Calendar, WEEK, MONTH, YEAR
 
 Coord = Tuple[int, int]
 
@@ -39,8 +40,10 @@ class World:
     sea_level: float
     tiles: List[TileHex]
     civs: Dict[int, Civ]
-    week: int = 0
+    turn: int = 0
     seed: int = 42
+    time_scale: str = "week"
+    calendar: Calendar = field(default_factory=Calendar)
 
     @property
     def width(self) -> int:  # compat
@@ -80,7 +83,8 @@ class SimulationEngine:
     def _new_world(self, w: int, h: int, seed: int, hex_size: int, sea_level: float) -> World:
         tiles = [TileHex(q=i % w, r=i // w) for i in range(w * h)]
         return World(width_hex=w, height_hex=h, hex_size=hex_size,
-                     sea_level=sea_level, tiles=tiles, civs={}, week=0, seed=seed)
+                     sea_level=sea_level, tiles=tiles, civs={},
+                     turn=0, seed=seed)
 
     def seed_population_everywhere(self, min_pop=3, max_pop=30) -> None:
         for t in self.world.tiles:
@@ -107,8 +111,17 @@ class SimulationEngine:
             i += 1
         return i
 
-    def advance_week(self) -> None:
+    def delta_years(self) -> float:
+        scale = self.world.time_scale
+        if scale == "week":
+            return WEEK
+        if scale == "month":
+            return MONTH
+        return YEAR
+
+    def advance_turn(self) -> None:
         w = self.world
+        dt = self.delta_years()
         # Production
         for civ in w.civs.values():
             gain = 0
@@ -146,14 +159,15 @@ class SimulationEngine:
                 if tried >= 3:
                     break
 
-        w.week += 1
+        w.turn += 1
+        w.calendar.advance_fraction(dt)
 
     def summary(self) -> Dict:
         w = self.world
         pop_total = sum(t.pop for t in w.tiles)
         owned = sum(1 for t in w.tiles if t.owner is not None)
         return {
-            "week": w.week,
+            "turn": w.turn,
             "width": w.width_hex, "height": w.height_hex,
             "total_pop": pop_total,
             "owned_tiles": owned,
@@ -172,7 +186,9 @@ class SimulationEngine:
             "height": w.height_hex,
             "hex_size": w.hex_size,
             "sea_level": w.sea_level,
-            "week": w.week, "seed": w.seed,
+            "turn": w.turn, "seed": w.seed,
+            "time_scale": w.time_scale,
+            "calendar": {"year": w.calendar.year, "month": w.calendar.month, "day": w.calendar.day},
             "tiles": [{"q": t.q, "r": t.r, "height": t.height, "biome": t.biome,
                        "pop": t.pop, "owner": t.owner, "feature": t.feature}
                       for t in w.tiles],
@@ -186,10 +202,14 @@ class SimulationEngine:
     def load_json(self, path: str) -> None:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
+        turn = data.get("turn", data.get("week", 0))
+        cal_data = data.get("calendar", {"year": 0, "month": 1, "day": 1})
+        time_scale = data.get("time_scale", "week")
         if "width_hex" in data:
             w = World(width_hex=data["width_hex"], height_hex=data["height_hex"],
                       hex_size=data.get("hex_size", 1), sea_level=data.get("sea_level", 0.0),
-                      tiles=[], civs={}, week=data["week"], seed=data["seed"])
+                      tiles=[], civs={}, turn=turn, seed=data["seed"],
+                      time_scale=time_scale, calendar=Calendar(**cal_data))
             tiles = [TileHex(q=td["q"], r=td["r"], height=td.get("height", 0.0),
                              biome=td.get("biome", "ocean"), pop=td.get("pop", 0),
                              owner=td.get("owner"), feature=td.get("feature"))
@@ -197,7 +217,8 @@ class SimulationEngine:
         else:
             w = World(width_hex=data["width"], height_hex=data["height"],
                       hex_size=data.get("hex_size", 1), sea_level=data.get("sea_level", 0.0),
-                      tiles=[], civs={}, week=data["week"], seed=data["seed"])
+                      tiles=[], civs={}, turn=turn, seed=data["seed"],
+                      time_scale=time_scale, calendar=Calendar(**cal_data))
             tiles = [TileHex(q=td.get("q", td["x"]), r=td.get("r", td["y"]),
                              height=td.get("height", 0.0), biome=td.get("biome", "ocean"),
                              pop=td.get("pop", 0), owner=td.get("owner"),

@@ -16,7 +16,7 @@ def cmd_step(args):
     eng = SimulationEngine()
     eng.load_json(args.world)
     for _ in range(args.weeks):
-        eng.advance_week()
+        eng.advance_turn()
     if args.save:
         eng.save_json(args.save)
         print(f"Saved to {args.save}")
@@ -31,7 +31,7 @@ def cmd_autoplay(args):
     eng = SimulationEngine()
     eng.load_json(args.world)
     for _ in range(args.weeks):
-        eng.advance_week()
+        eng.advance_turn()
     if args.save:
         eng.save_json(args.save)
         print(f"Saved to {args.save}")
@@ -51,7 +51,7 @@ def main():
     ap_new.add_argument("--out", default="world.json")
     ap_new.set_defaults(func=cmd_new)
 
-    ap_step = sub.add_parser("step", help="Advance weeks and print summary")
+    ap_step = sub.add_parser("step", help="Advance turns and print summary")
     ap_step.add_argument("world")
     ap_step.add_argument("--weeks", type=int, default=1)
     ap_step.add_argument("--save", default=None)
@@ -61,7 +61,7 @@ def main():
     ap_sum.add_argument("world")
     ap_sum.set_defaults(func=cmd_summary)
 
-    ap_auto = sub.add_parser("autoplay", help="Run a bot for N weeks")
+    ap_auto = sub.add_parser("autoplay", help="Run a bot for N turns")
     ap_auto.add_argument("world")
     ap_auto.add_argument("--weeks", type=int, default=52)
     ap_auto.add_argument("--save", default=None)

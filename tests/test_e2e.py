@@ -12,10 +12,10 @@ def test_end_to_end(tmp_path):
     eng2 = SimulationEngine()
     eng2.load_json(str(world_path))
     for _ in range(100):
-        eng2.advance_week()
+        eng2.advance_turn()
 
     s = eng2.summary()
-    assert s["week"] == 100
+    assert s["turn"] == 100
     assert s["total_pop"] > 0
     for _, info in s["civs"].items():
         assert info["tiles"] >= 1
