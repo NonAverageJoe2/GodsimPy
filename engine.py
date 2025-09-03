@@ -2,6 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
 import json
+import logging
 import random
 import math
 
@@ -20,6 +21,8 @@ from worldgen.hexgrid import distance as hex_distance
 from pathfinding import astar
 from time_model import Calendar, WEEK, MONTH, YEAR
 from resources import yields_for
+
+logger = logging.getLogger(__name__)
 
 Coord = Tuple[int, int]
 
@@ -226,7 +229,9 @@ class SimulationEngine:
             for tech_id in completed:
                 tech = self.tech_system.tech_tree.technologies.get(tech_id)
                 if tech:
-                    print(f"[Turn {w.turn}] {civ.name} has discovered {tech.name}!")
+                    logger.info(
+                        "[Turn %s] %s has discovered %s!", w.turn, civ.name, tech.name
+                    )
 
         # --- Economy & demographic growth with tech bonuses --------------------
         BASE_K = 100.0

@@ -152,14 +152,16 @@ def advance_turn(
                     best_choices = [(ny, nx)]
                 elif abs(fval - best_food) <= 1e-6:
                     best_choices.append((ny, nx))
-                if not best_choices:
-                    continue
-                ny, nx = best_choices[0]
-                if len(best_choices) > 1:
-                    ny, nx = best_choices[rng.integers(len(best_choices))]
-                owner[ny, nx] = civ
-                pop[ny, nx] = np.float32(settler_cost)
-                pop[y, x] = np.float32(max(0.0, pop[y, x] - settler_cost))
+
+            if not best_choices:
+                continue
+
+            ny, nx = best_choices[0]
+            if len(best_choices) > 1:
+                ny, nx = best_choices[rng.integers(len(best_choices))]
+            owner[ny, nx] = civ
+            pop[ny, nx] = np.float32(settler_cost)
+            pop[y, x] = np.float32(max(0.0, pop[y, x] - settler_cost))
         ws.owner_map = owner
         ws.pop_map = pop
 
