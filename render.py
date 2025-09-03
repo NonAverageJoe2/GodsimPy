@@ -7,7 +7,7 @@ from typing import List, Tuple
 import numpy as np
 from PIL import Image, ImageDraw
 
-from hexgrid import axial_to_world_flat
+from worldgen.hexgrid import axial_to_world_flat
 
 # Biome color palette: grass, coast/desert, mountain, ocean
 BIOME_COLORS = [

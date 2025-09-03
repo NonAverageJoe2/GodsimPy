@@ -5,8 +5,8 @@ import json
 import random
 
 from worldgen import apply_worldgen
-from hexgrid import neighbors6
-from hexgrid import distance as hex_distance
+from worldgen.hexgrid import neighbors6
+from worldgen.hexgrid import distance as hex_distance
 from pathfinding import astar
 from time_model import Calendar, WEEK, MONTH, YEAR
 from resources import yields_for

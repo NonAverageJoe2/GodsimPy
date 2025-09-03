@@ -3,14 +3,41 @@
 
 import os
 import sys
+import math
 import pygame
 import numpy as np
 from dataclasses import dataclass
 from typing import Optional, Tuple, Dict, List
 from enum import Enum
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+# --- top-down deskew helpers (used by HexRenderer) ---
+DESKEW_Y = 1.0 / math.sqrt(3.0)
+
+SQRT3 = math.sqrt(3.0)
+
+def _evenq_center(q: int, r: int, radius: float) -> tuple[float, float]:
+    """
+    Center of a flat-top hex in an even-q offset layout.
+    Produces a rectangular map boundary with regular hex shapes.
+    """
+    hex_w = 2.0 * radius
+    hex_h = SQRT3 * radius
+    horiz = 0.75 * hex_w           # 1.5 * radius
+    vert  = hex_h                  # sqrt(3) * radius
+    cx = q * horiz + radius
+    cy = r * vert + (hex_h * 0.5 if (q & 1) else 0.0) + hex_h * 0.5
+    return cx, cy
+
+def _deskew(x: float, y: float) -> tuple[float, float]:
+    # Cancel axial's built-in √3 vertical stretch so top-down looks rectangular
+    return x, y * DESKEW_Y
+
+def _to_rect_space(x: float, y: float, q: int, r_hex: float) -> tuple[float, float]:
+    """
+    Convert raw axial pixel coords (flat-top) into rectangular top-down space:
+      y' = y / √3  -  0.5 * r_hex * q
+    """
+    return x, y * DESKEW_Y - 0.5 * r_hex * q
 
 from sim.state import WorldState, load_npz, save_npz
 from sim.loop import advance_turn
@@ -19,7 +46,10 @@ from sim.terrain import generate_features, describe_feature
 from sim.civilization import initialize_civs, make_palette
 from worldgen import axial_to_world_flat, build_world, build_biomes
 from sim.state import from_worldgen
-from render import render_iso
+from render import render_topdown, render_iso
+from render.render_topdown import render_topdown_height, render_topdown_political
+# NEW: pointy-top mapping for square-looking top-down
+from worldgen.hexgrid import axial_to_world_pointy
 
 # Import hex popup if available
 try:
@@ -47,7 +77,7 @@ class Camera:
     zoom: float = 1.0
     min_zoom: float = 0.3
     max_zoom: float = 3.0
-    
+
     def pan(self, dx: float, dy: float):
         self.x += dx / self.zoom
         self.y += dy / self.zoom
@@ -73,7 +103,7 @@ class Camera:
 
 
 class HexRenderer:
-    """Renders hexagonal map with different view modes."""
+    """Renders hexagonal map with different view modes (pointy-top in top-down)."""
     
     # Color schemes for different biomes
     BIOME_COLORS = {
@@ -84,58 +114,67 @@ class HexRenderer:
         4: (238, 203, 173),  # Sand/Desert - Sandy
     }
     
-    def __init__(self, world_state: WorldState, hex_radius: float = 20.0):
+    def __init__(self, world_state: WorldState, hex_radius: float = 40.0):
         self.world_state = world_state
         self.hex_radius = hex_radius
         self.selected_hex: Optional[Tuple[int, int]] = None
         self.hovered_hex: Optional[Tuple[int, int]] = None
         self.civ_colors = make_palette(10)  # Support up to 10 civs
+
+    
         
     def get_hex_at_point(self, wx: float, wy: float) -> Optional[Tuple[int, int]]:
-        """Convert world coordinates to hex coordinates (q, r)."""
-        # Approximate - uses rectangular bounds for simplicity
-        best_q, best_r = None, None
-        best_dist = float('inf')
-        
+        """World -> (q,r) using even-q centers (regular flat-top hexes)."""
+        best_q = best_r = None
+        best_d2 = float("inf")
+        r_hex = self.hex_radius
+        pick_r2 = (0.95 * r_hex) ** 2
+
         for r in range(self.world_state.height):
             for q in range(self.world_state.width):
-                hx, hy = axial_to_world_flat(q, r, self.hex_radius)
-                dist = (wx - hx) ** 2 + (wy - hy) ** 2
-                if dist < best_dist and dist < (self.hex_radius ** 2):
-                    best_dist = dist
-                    best_q, best_r = q, r
-        
+                cx, cy = _evenq_center(q, r, r_hex)
+                d2 = (wx - cx) ** 2 + (wy - cy) ** 2
+                if d2 < best_d2 and d2 <= pick_r2:
+                    best_d2, best_q, best_r = d2, q, r
+
         return (best_q, best_r) if best_q is not None else None
-    
-    def draw_hex(self, surface: pygame.Surface, q: int, r: int, color: Tuple[int, int, int], 
-                 camera: Camera, outline_color: Optional[Tuple[int, int, int]] = None):
-        """Draw a single hexagon."""
-        cx, cy = axial_to_world_flat(q, r, self.hex_radius)
-        
-        # Calculate hex vertices
-        vertices = []
+
+    def draw_hex(
+        self,
+        surface: pygame.Surface,
+        q: int,
+        r: int,
+        color: Tuple[int, int, int],
+        camera: Camera,
+        outline_color: Optional[Tuple[int, int, int]] = None,
+    ):
+        """Draw one flat-top hex at its even-q center."""
+        cx, cy = _evenq_center(q, r, self.hex_radius)
+
+        verts = []
+        # flat-top vertices: 0°, 60°, 120°, ...
         for i in range(6):
-            angle = np.pi / 3 * i
-            vx = cx + self.hex_radius * np.cos(angle)
-            vy = cy + self.hex_radius * np.sin(angle)
+            ang = math.radians(60 * i)
+            vx = cx + self.hex_radius * math.cos(ang)
+            vy = cy + self.hex_radius * math.sin(ang)
             sx, sy = camera.world_to_screen(vx, vy, surface.get_width(), surface.get_height())
-            vertices.append((sx, sy))
-        
-        # Check if hex is visible
-        if all(sx < -50 or sx > surface.get_width() + 50 or 
-               sy < -50 or sy > surface.get_height() + 50 for sx, sy in vertices):
+            verts.append((sx, sy))
+
+        # (optional) quick cull
+        if all(
+            sx < -50 or sx > surface.get_width() + 50 or
+            sy < -50 or sy > surface.get_height() + 50
+            for sx, sy in verts
+        ):
             return
-        
-        # Draw filled hex
-        pygame.draw.polygon(surface, color, vertices)
-        
-        # Draw outline
+
+        pygame.draw.polygon(surface, color, verts)
         if outline_color:
-            pygame.draw.polygon(surface, outline_color, vertices, 2)
+            pygame.draw.polygon(surface, outline_color, verts, 2)
         elif self.selected_hex == (q, r):
-            pygame.draw.polygon(surface, (255, 255, 0), vertices, 3)  # Yellow selection
+            pygame.draw.polygon(surface, (255, 255, 0), verts, 3)
         elif self.hovered_hex == (q, r):
-            pygame.draw.polygon(surface, (255, 255, 255), vertices, 2)  # White hover
+            pygame.draw.polygon(surface, (255, 255, 255), verts, 2)
     
     def get_hex_color(self, q: int, r: int, view_mode: ViewMode) -> Tuple[int, int, int]:
         """Get color for hex based on view mode."""
@@ -172,7 +211,7 @@ class HexRenderer:
         return (100, 100, 100)
     
     def render(self, surface: pygame.Surface, camera: Camera, view_mode: ViewMode):
-        """Render the entire hex map."""
+        """Render the entire hex map (pointy-top in top-down)."""
         # Clear background
         surface.fill((10, 10, 30))
         
@@ -182,7 +221,7 @@ class HexRenderer:
                 color = self.get_hex_color(q, r, view_mode)
                 outline = None
                 
-                # Special outline for owned tiles in terrain view
+                # Outline owned tiles in terrain view
                 if view_mode == ViewMode.TERRAIN and self.world_state.owner_map[r, q] >= 0:
                     owner = self.world_state.owner_map[r, q]
                     outline = self.civ_colors[owner % len(self.civ_colors)]
@@ -476,7 +515,7 @@ class GodsimGUI:
             self.world_state, self.civs = initialize_civs(
                 self.world_state, 
                 n_civs=5,
-                base_pop=100.0,
+                base_pop=50.0,
                 seed=self.world_state.seed + 2000
             )
         else:
@@ -636,6 +675,9 @@ class GodsimGUI:
     
     def update(self):
         """Update simulation state."""
+        # Sync pause state between control panel and world state
+        self.world_state.paused = self.control_panel.paused
+        
         if not self.control_panel.paused:
             current_time = pygame.time.get_ticks()
             
@@ -647,7 +689,6 @@ class GodsimGUI:
                 advance_turn(
                     self.world_state,
                     feature_map=self.feature_map,
-                    expansion_every=4,
                     steps=1
                 )
                 self.last_update = current_time
@@ -682,7 +723,7 @@ class GodsimGUI:
             iso_surf = pygame.transform.smoothscale(iso_surf, (render_width, render_height))
             map_surface.blit(iso_surf, (0, 0))
         else:
-            # Default top-down view
+            # Default top-down view using fixed HexRenderer
             self.hex_renderer.render(map_surface, self.camera, self.control_panel.view_mode)
 
         # Blit map surface to screen
@@ -704,6 +745,118 @@ class GodsimGUI:
         # Update display
         pygame.display.flip()
     
+    def render_topdown_view(self, surface: pygame.Surface, view_mode: ViewMode):
+        """Render top-down view using render_topdown functions."""
+        # Create appropriate color/biome array based on view mode
+        H, W = self.world_state.height, self.world_state.width
+        color_array = np.zeros((H, W), dtype=np.int32)
+        
+        if view_mode == ViewMode.TERRAIN:
+            # Use biome data directly
+            color_array = self.world_state.biome_map.copy()
+            img = render_topdown(color_array, self.world_state.hex_radius, scale=1)
+            
+        elif view_mode == ViewMode.POLITICAL:
+            # For political mode, we need to create a custom image with proper colors
+            # Create a PIL image directly with political colors
+            from PIL import Image, ImageDraw
+            import math
+            from worldgen.hexgrid import axial_to_world_flat, SQRT3
+            
+            # Calculate canvas bounds
+            xs, ys = [], []
+            for r in range(H):
+                for q in range(W):
+                    x, z = axial_to_world_flat(q, r, self.world_state.hex_radius)
+                    xs.append(x)
+                    ys.append(z)
+            
+            padding = self.world_state.hex_radius * 2
+            min_x, max_x = min(xs) - padding, max(xs) + padding
+            min_y, max_y = min(ys) - padding, max(ys) + padding
+            total_width = max_x - min_x
+            total_height = max_y - min_y
+            
+            img_w = int(total_width)
+            img_h = int(total_height)
+            
+            img = Image.new("RGBA", (img_w, img_h), (16, 18, 24, 255))
+            draw = ImageDraw.Draw(img)
+            
+            # Get civ colors from HexRenderer
+            civ_colors = self.hex_renderer.civ_colors
+            biome_colors = self.hex_renderer.BIOME_COLORS
+            
+            def hex_points_flat(cx, cy, radius):
+                pts = []
+                for i in range(6):
+                    ang = math.radians(60*i)
+                    x = cx + math.cos(ang) * radius
+                    y = cy + math.sin(ang) * radius
+                    pts.append((x, y))
+                return pts
+            
+            # Draw each hex
+            for r in range(H):
+                for q in range(W):
+                    x, z = axial_to_world_flat(q, r, self.world_state.hex_radius)
+                    x -= min_x
+                    y = z - min_y
+                    
+                    pts = hex_points_flat(x, y, self.world_state.hex_radius)
+                    
+                    # Get political color
+                    owner = self.world_state.owner_map[r, q]
+                    if owner >= 0:
+                        color = civ_colors[owner % len(civ_colors)]
+                    else:
+                        # Darken terrain color for unowned tiles
+                        biome = self.world_state.biome_map[r, q]
+                        base_color = biome_colors.get(biome, (100, 100, 100))
+                        color = tuple(int(c * 0.6) for c in base_color)
+                    
+                    draw.polygon(pts, fill=color)
+            
+        elif view_mode == ViewMode.POPULATION:
+            # Create population-based array
+            for r in range(H):
+                for q in range(W):
+                    pop = self.world_state.pop_map[r, q]
+                    if pop > 0:
+                        color_array[r, q] = min(3, int(pop / 5))  # Scale population to 0-3
+                    else:
+                        color_array[r, q] = 0
+            img = render_topdown(color_array, self.world_state.hex_radius, scale=1)
+            
+        else:  # RESOURCES or fallback
+            # Use height data for resources view
+            img = render_topdown_height(self.world_state.height_map, self.world_state.hex_radius, scale=1)
+        
+        # Convert PIL image to pygame surface
+        topdown_surf = pygame.image.fromstring(img.tobytes(), img.size, img.mode)
+        
+        # Scale to fit the surface while maintaining aspect ratio
+        surf_w, surf_h = surface.get_size()
+        img_w, img_h = img.size
+        
+        # Calculate scale to fit while preserving aspect ratio
+        scale_x = surf_w / img_w
+        scale_y = surf_h / img_h
+        scale = min(scale_x, scale_y)
+        
+        new_w = int(img_w * scale)
+        new_h = int(img_h * scale)
+        
+        topdown_surf = pygame.transform.smoothscale(topdown_surf, (new_w, new_h))
+        
+        # Center the image on the surface
+        x_offset = (surf_w - new_w) // 2
+        y_offset = (surf_h - new_h) // 2
+        
+        # Clear background
+        surface.fill((16, 18, 24))  # Match render background color
+        surface.blit(topdown_surf, (x_offset, y_offset))
+    
     def run(self):
         """Main game loop."""
         while self.running:
@@ -721,8 +874,8 @@ def main():
     
     parser = argparse.ArgumentParser(description="GodsimPy GUI")
     parser.add_argument("--load", type=str, help="Path to world NPZ file to load")
-    parser.add_argument("--width", type=int, default=64, help="World width in hexes")
-    parser.add_argument("--height", type=int, default=48, help="World height in hexes")
+    parser.add_argument("--width", type=int, default=200, help="World width in hexes")
+    parser.add_argument("--height", type=int, default=120, help="World height in hexes")
     parser.add_argument("--seed", type=int, help="Random seed for world generation")
     parser.add_argument("--civs", type=int, default=5, help="Number of civilizations")
     
@@ -749,7 +902,7 @@ def main():
         world_state = from_worldgen(height, biomes, sea, args.width, args.height, 12.0, seed)
         
         # Initialize civilizations
-        world_state, _ = initialize_civs(world_state, n_civs=args.civs, base_pop=100.0, seed=seed + 1000)
+        world_state, _ = initialize_civs(world_state, n_civs=args.civs, base_pop=50.0, seed=seed + 1000)
     
     # Create and run GUI
     gui = GodsimGUI(world_state=world_state)

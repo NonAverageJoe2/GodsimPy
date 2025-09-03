@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import List, Tuple, Dict, Optional
 import heapq
-from hexgrid import distance
+from worldgen.hexgrid import distance
 
 Coord = Tuple[int, int]
 

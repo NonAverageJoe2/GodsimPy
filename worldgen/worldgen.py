@@ -6,7 +6,7 @@ from typing import Tuple
 
 from .noise import value_noise
 from .plates import generate_plates, apply_plate_forces
-from hexgrid import neighbors6
+from .hexgrid import neighbors_axial
 
 
 def generate_height(width: int, height: int, seed: int,
@@ -75,7 +75,7 @@ def classify_biomes(height: np.ndarray, sea_level: float, mountain_h: float) -> 
         for q in range(W):
             if out[r, q] == "ocean":
                 continue
-            for nq, nr in neighbors6(q, r):
+            for nq, nr in neighbors_axial(q, r):
                 if 0 <= nq < W and 0 <= nr < H and out[nr, nq] == "ocean":
                     out[r, q] = "coast"
                     break

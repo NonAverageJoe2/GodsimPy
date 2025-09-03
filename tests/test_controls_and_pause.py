@@ -103,7 +103,7 @@ class ControlsPauseTest(unittest.TestCase):
         if ws.turn % 4 == 0:
             advance_turn(ws, feature_map=features, steps=1)
         owned_before = int(np.sum(ws.owner_map >= 0))
-        advance_turn(ws, feature_map=features, steps=1, expansion_every=4)
+        advance_turn(ws, feature_map=features, steps=1)
         owned_after = int(np.sum(ws.owner_map >= 0))
         self.assertEqual(owned_before, owned_after)
 

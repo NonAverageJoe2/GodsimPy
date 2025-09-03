@@ -3,7 +3,7 @@ from __future__ import annotations
 import math, random
 import numpy as np
 from typing import Dict, Tuple
-from hexgrid import axial_to_world_flat
+from .hexgrid import axial_to_world_flat
 
 def generate_plates(w: int, h: int, plate_count: int, radius: float, seed: int):
     rng = random.Random(seed)

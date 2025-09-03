@@ -26,7 +26,7 @@ BIOME_PROB = [0.65, 0.15, 0.07, 0.05, 0.08]
 def step_n(ws, feature_map, n):
     dates = []
     for _ in range(n):
-        ws = advance_turn(ws, feature_map=feature_map, expansion_every=4, steps=1)
+        ws = advance_turn(ws, feature_map=feature_map, steps=1)
         dates.append(ws.get_date_tuple())
     return ws, dates
 

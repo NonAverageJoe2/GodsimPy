@@ -1,4 +1,6 @@
-"""Simple Pygame GUI for interacting with the simulation world."""
+"""Simple Pygame GUI for interacting with the simulation world, with
+toggleable Top-Down and Isometric projections.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +10,7 @@ from typing import Optional, Tuple
 import pygame
 
 from engine import SimulationEngine, Army
-from hexgrid import axial_to_pixel, hex_polygon, pixel_to_axial
+from worldgen.hexgrid import axial_to_pixel, hex_polygon, pixel_to_axial
 
 # Biome colors roughly matching ``render.py``
 BIOME_COLORS = [
@@ -44,6 +46,11 @@ class GameGUI:
         self.camera_x = 0.0
         self.camera_y = 0.0
 
+        # View mode: "topdown" (orthographic) or "isometric"
+        self.view_mode = "topdown"
+        # Isometric scale lets you widen/narrow the diamond shape
+        self.iso_scale = 1.0
+
         self.screen = pygame.display.set_mode((1280, 800))
         pygame.display.set_caption("Sim GUI")
         self.font = pygame.font.SysFont("consolas", 16)
@@ -68,6 +75,7 @@ class GameGUI:
 
     # ------------------------------------------------------------------ utils --
     def clamp_camera(self) -> None:
+        # Clamps in topdown world space; OK for both modes since we un/project
         sw, sh = self.screen.get_size()
         max_x = max(0.0, self.world_w - sw / self.zoom)
         max_y = max(0.0, self.world_h - sh / self.zoom)
@@ -81,13 +89,58 @@ class GameGUI:
             self.camera_y = max_y
 
     def world_to_screen(self, x: float, y: float) -> Tuple[int, int]:
-        sx = int((x - self.camera_x) * self.zoom)
-        sy = int((y - self.camera_y) * self.zoom)
-        return sx, sy
+        sx = (x - self.camera_x) * self.zoom
+        sy = (y - self.camera_y) * self.zoom
+        return int(sx), int(sy)
 
-    def screen_to_hex(self, sx: int, sy: int) -> Tuple[int, int]:
+    def screen_to_world(self, sx: int, sy: int) -> Tuple[float, float]:
         wx = sx / self.zoom + self.camera_x
         wy = sy / self.zoom + self.camera_y
+        return wx, wy
+
+    # --- Projection helpers ---------------------------------------------------
+    # We project AFTER the camera transform so panning & zooming behave uniformly.
+
+    def project_point(self, sx: int, sy: int) -> Tuple[int, int]:
+        """Project a screen-space point (topdown) into the current view."""
+        if self.view_mode == "topdown":
+            return sx, sy
+
+        # Isometric: apply matrix [[1,-1],[0.5,0.5]] with an overall scale.
+        sw, sh = self.screen.get_size()
+        cx, cy = sw * 0.5, sh * 0.5
+
+        dx = (sx - cx) * self.iso_scale
+        dy = (sy - cy) * self.iso_scale
+
+        ix = dx - dy
+        iy = 0.5 * (dx + dy)
+
+        return int(cx + ix), int(cy + iy)
+
+    def unproject_point(self, px: int, py: int) -> Tuple[int, int]:
+        """Inverse of project_point (for mouse picking)."""
+        if self.view_mode == "topdown":
+            return px, py
+
+        sw, sh = self.screen.get_size()
+        cx, cy = sw * 0.5, sh * 0.5
+
+        dx = px - cx
+        dy = py - cy
+
+        # Inverse of [[1,-1],[0.5,0.5]] is [[0.5,1],[-0.5,1]]; account for iso_scale.
+        inv_scale = (1.0 / self.iso_scale) if self.iso_scale != 0 else 1.0
+        ux = (0.5 * dx + 1.0 * dy) * inv_scale
+        uy = (-0.5 * dx + 1.0 * dy) * inv_scale
+
+        return int(cx + ux), int(cy + uy)
+
+    def screen_to_hex(self, sx: int, sy: int) -> Tuple[int, int]:
+        # Convert from displayed pixel -> topdown pixel -> axial hex
+        # so picking works in both view modes
+        upx, upy = self.unproject_point(sx, sy)
+        wx, wy = self.screen_to_world(upx, upy)
         return pixel_to_axial(wx, wy, self.hex_px)
 
     def tile_color(self, tile) -> Tuple[int, int, int]:
@@ -141,6 +194,15 @@ class GameGUI:
             t = self.eng.world.get_tile(q, r)
             if t.owner is not None:
                 self.selected_army = self.eng.add_army(t.owner, (q, r))
+        elif ev.key == pygame.K_v:
+            # Toggle view mode
+            self.view_mode = "isometric" if self.view_mode == "topdown" else "topdown"
+        elif ev.key == pygame.K_LEFTBRACKET:
+            # Narrow iso diamond
+            self.iso_scale = max(0.5, self.iso_scale * 0.9)
+        elif ev.key == pygame.K_RIGHTBRACKET:
+            # Widen iso diamond
+            self.iso_scale = min(2.0, self.iso_scale * 1.1)
 
     # ------------------------------------------------------------------- main --
     def run(self) -> None:
@@ -181,20 +243,27 @@ class GameGUI:
         zoom = self.zoom
         sw, sh = scr.get_size()
 
+        # NOTE: Culling is conservative in isometric mode; we keep it simple.
+
         for t in w.tiles:
             cx, cy = axial_to_pixel(t.q, t.r, self.hex_px)
             sx, sy = self.world_to_screen(cx, cy)
+            # Project after camera & zoom
+            psx, psy = self.project_point(sx, sy)
+
             size = self.hex_px * zoom
             if (
-                sx + size < 0
-                or sy + size < 0
-                or sx - size > sw
-                or sy - size > sh
+                psx + size < 0
+                or psy + size < 0
+                or psx - size > sw
+                or psy - size > sh
             ):
                 continue
 
             pts = hex_polygon(t.q, t.r, self.hex_px)
             pts = [self.world_to_screen(px, py) for px, py in pts]
+            pts = [self.project_point(px, py) for px, py in pts]
+
             pygame.draw.polygon(scr, self.tile_color(t), pts)
             if self.selected_hex == (t.q, t.r):
                 pygame.draw.polygon(scr, (255, 255, 255), pts, 2)
@@ -202,19 +271,26 @@ class GameGUI:
         for a in w.armies:
             cx, cy = axial_to_pixel(a.q, a.r, self.hex_px)
             sx, sy = self.world_to_screen(cx, cy)
-            if sx < -10 or sy < -10 or sx > sw + 10 or sy > sh + 10:
+            psx, psy = self.project_point(sx, sy)
+            if psx < -10 or psy < -10 or psx > sw + 10 or psy > sh + 10:
                 continue
             col = OWNER_TINTS[a.civ_id % len(OWNER_TINTS)]
             rad = int(self.hex_px * 0.3 * zoom)
-            pygame.draw.circle(scr, (0, 0, 0), (sx, sy), rad + 2)
-            pygame.draw.circle(scr, col, (sx, sy), rad)
+            pygame.draw.circle(scr, (0, 0, 0), (psx, psy), rad + 2)
+            pygame.draw.circle(scr, col, (psx, psy), rad)
             if a is self.selected_army:
-                pygame.draw.circle(scr, (255, 255, 255), (sx, sy), rad + 3, 2)
+                pygame.draw.circle(scr, (255, 255, 255), (psx, psy), rad + 3, 2)
 
         # HUD -----------------------------------------------------------------
         date = self.eng.world.calendar
         dstr = f"{date.year:04d}-{date.month:02d}-{date.day:02d}"
-        hud_parts = [f"{dstr}", f"scale:{self.eng.world.time_scale}"]
+        hud_parts = [
+            f"{dstr}",
+            f"scale:{self.eng.world.time_scale}",
+            f"view:{self.view_mode}",
+        ]
+        if self.view_mode == "isometric":
+            hud_parts.append(f"iso_scale:{self.iso_scale:.2f}")
         if self.selected_hex is not None:
             q, r = self.selected_hex
             t = self.eng.world.get_tile(q, r)
@@ -235,4 +311,3 @@ if __name__ == "__main__":
         print("Usage: python gui.py path/to/world.json")
         sys.exit(1)
     GameGUI(sys.argv[1]).run()
-

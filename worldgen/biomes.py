@@ -1,7 +1,7 @@
 # biomes.py - classify heightmap to simple biomes
 from __future__ import annotations
 import numpy as np
-from hexgrid import neighbors_axial, in_bounds
+from .hexgrid import neighbors_axial, in_bounds
 
 GRASS, COAST, MOUNTAIN, OCEAN = 0, 1, 2, 3
 
