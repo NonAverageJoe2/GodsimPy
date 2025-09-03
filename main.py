@@ -1227,7 +1227,7 @@ def main():
 
     gui = GodsimGUI(world_state=world_state)
     # OPTIONAL: if your simulation core already created a TechnologySystem, attach it:
-    # gui.tech_system = world_state.tech_system
+    gui.tech_system = engine.tech_system
     gui.run()
 
 
