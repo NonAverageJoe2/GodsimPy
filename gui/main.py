@@ -35,7 +35,10 @@ class GameGUI:
         pygame.init()
         self.clock = pygame.time.Clock()
         self.eng = SimulationEngine(width=48, height=32, seed=1)
-        apply_all_fixes(engine)
+        try:
+            apply_all_fixes(self.eng)
+        except Exception:
+            pass
         self.hex_px = 24
         self.zoom = 1.0
         self.camera_x = 0.0

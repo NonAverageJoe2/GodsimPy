@@ -14,14 +14,14 @@ import numpy as np
 from typing import Optional
 
 # Import all the fix modules
-from population_fixes import safe_update_population, TileHexFixed
-from military_fixes import (
-    ArmyFixed, ManpowerManager, synchronize_army_lists, 
+from .population_fixes import safe_update_population, TileHexFixed
+from .military_fixes import (
+    ArmyFixed, ManpowerManager, synchronize_army_lists,
     remove_army_properly
 )
-from cohort_integration import CohortWorldState, TileCohorts
-from military_economy import MilitaryEconomy
-from settlement_military import SettlementMilitarySystem, SettlementType
+from .cohort_integration import CohortWorldState, TileCohorts
+from .military_economy import MilitaryEconomy
+from .settlement_military import SettlementMilitarySystem, SettlementType
 
 
 def apply_all_fixes(engine) -> None:
