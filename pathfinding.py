@@ -1,16 +1,27 @@
-from __future__ import annotations
-from typing import List, Tuple, Dict, Optional
 import heapq
+from typing import Dict, List, Tuple
+
+from worldgen.biomes import Biome
 from worldgen.hexgrid import distance
 
 Coord = Tuple[int, int]
 
 
+def _biome_name(tile) -> str:
+    """Return biome name as lowercase string for tiles that may store
+    either the Biome enum or raw strings."""
+    b = tile.biome
+    if isinstance(b, Biome):
+        return b.name.lower()
+    return str(b).lower()
+
+
 def terrain_cost(world, q: int, r: int) -> int:
     t = world.get_tile(q, r)
-    if t.biome == "ocean":
+    biome = _biome_name(t)
+    if biome == "ocean":
         return 50
-    if t.biome == "mountain":
+    if biome == "mountain":
         return 5
     return 1
 

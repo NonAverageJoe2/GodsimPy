@@ -92,7 +92,9 @@ class Army:
     target: Optional[Coord] = None
     path: List[Coord] = field(default_factory=list)
     supply: int = 100
-    speed_hexes_per_year: int = 12
+    # Default movement speed tuned so that an army advances roughly
+    # one hex per weekly turn. 52 hexes/year = 1 hex/week.
+    speed_hexes_per_year: int = 52
     _movement_accumulator: float = field(default=0.0, init=False)
 
 
@@ -413,7 +415,12 @@ class SimulationEngine:
                 min_dist = min(hex_distance(army.q, army.r, tq, tr) for tq, tr in civ_tiles)
             else:
                 min_dist = float("inf")
-            if tile.biome == Biome.MOUNTAIN or min_dist > 5:
+            biome = tile.biome
+            if isinstance(biome, Biome):
+                is_mountain = biome == Biome.MOUNTAIN
+            else:
+                is_mountain = str(biome).lower() == "mountain"
+            if is_mountain or min_dist > 5:
                 army.supply = max(0, army.supply - 1)
                 if army.supply <= 0:
                     army.strength = max(0, army.strength - 1)
