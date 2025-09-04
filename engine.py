@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 
 Coord = Tuple[int, int]  # (q, r) - axial hex coordinates: q=column, r=row
 
+MALE_FRACTION = 0.5
+MANPOWER_AVAILABLE_FRACTION = 0.2  # 20% of male population available for combat
+
 
 def _convert_biome_from_save(biome_value) -> str:
     """Normalize biome value from save files to a lowercase string.
@@ -84,6 +87,8 @@ class Civ:
     stock_food: int = 0
     tiles: List[Coord] = field(default_factory=list)
     armies: List["Army"] = field(default_factory=list)
+    manpower_used: int = 0
+    manpower_limit: int = 0
 
     # --- Technology display/state mirrors (kept here for quick summary/save) ---
     current_age: str = "Age of Dissemination"
@@ -224,11 +229,12 @@ class SimulationEngine:
         
         if civ.stock_food < ARMY_FOOD_COST:
             raise ValueError(f"Not enough food to create army (need {ARMY_FOOD_COST}, have {civ.stock_food})")
-        
+
         civ.stock_food -= ARMY_FOOD_COST
         army = Army(civ_id=civ_id, q=q, r=r, strength=strength, supply=supply)
         self.world.armies.append(army)
         self.world.civs[civ_id].armies.append(army)
+        civ.manpower_used += strength
         return army
 
     def set_army_target(self, army: Army, target: Coord) -> None:
@@ -286,22 +292,35 @@ class SimulationEngine:
         POP_MAX = 1_000_000_000
 
         gains = {cid: 0.0 for cid in w.civs}
+        manpower_penalties: Dict[int, float] = {}
+        for cid, civ in w.civs.items():
+            total_pop = sum(w.get_tile(q, r).pop for q, r in civ.tiles)
+            male_pop = total_pop * MALE_FRACTION
+            limit = int(male_pop * MANPOWER_AVAILABLE_FRACTION)
+            civ.manpower_limit = limit
+            used = civ.manpower_used
+            if limit > 0 and used > limit:
+                over_ratio = (used - limit) / limit
+                manpower_penalties[cid] = min(1.0, over_ratio)
+            else:
+                manpower_penalties[cid] = 0.0
 
         for t in w.tiles:
             base_food, base_prod = yields_for(t)
 
-            # If owned, apply tile yield bonuses from tech
             if t.owner is not None and t.owner in self.tech_system.civ_states:
                 bonuses = self.tech_system.get_civ_bonuses(t.owner)
                 food_yield, _prod_yield = apply_tech_bonuses_to_tile(
                     t, bonuses, base_food, base_prod
                 )
-                gains[t.owner] += food_yield * dt
             else:
                 food_yield = base_food
 
+            penalty = manpower_penalties.get(t.owner, 0.0) if t.owner is not None else 0.0
+            if t.owner is not None:
+                food_yield *= (1 - penalty)
+                gains[t.owner] += food_yield * dt
 
-            # Growth bonus (e.g., improved medicine/agriculture)
             growth_bonus = 0.0
             if t.owner is not None and t.owner in self.tech_system.civ_states:
                 bonuses = self.tech_system.get_civ_bonuses(t.owner)
@@ -309,7 +328,7 @@ class SimulationEngine:
 
             K = BASE_K * food_yield
             K_eff = max(K, 1.0)
-            actual_r = R + growth_bonus
+            actual_r = (R + growth_bonus) * (1 - penalty)
 
             if t._pop_float > 0:
                 ratio = (K_eff - t._pop_float) / t._pop_float
@@ -494,7 +513,8 @@ class SimulationEngine:
                         self.world.civs[army_to_remove.civ_id].armies.remove(army_to_remove)
 
                 civs = {a.civ_id for a in armies}
-
+        for cid, civ in self.world.civs.items():
+            civ.manpower_used = sum(a.strength for a in civ.armies)
     # ----------------------------- Summary/Save/Load ---------------------------
 
     def summary(self) -> Dict:
