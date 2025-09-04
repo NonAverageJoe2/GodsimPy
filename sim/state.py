@@ -20,12 +20,11 @@ class WorldState:
     biome_map: np.ndarray
     owner_map: np.ndarray
     pop_map: np.ndarray
-    settlement_map: np.ndarray  # 0=hamlet, 1=village, 2=town, 3=city, 4=capital
-    culture_map: np.ndarray     # Culture IDs (-1 = no culture, 0+ = culture ID)
-    religion_map: np.ndarray    # Religion IDs (-1 = no religion, 0+ = religion ID)
-
     sea_level: float
     hex_radius: float
+    settlement_map: np.ndarray | None = None  # 0=hamlet, 1=village, 2=town, 3=city, 4=capital
+    culture_map: np.ndarray | None = None     # Culture IDs (-1 = no culture, 0+ = culture ID)
+    religion_map: np.ndarray | None = None    # Religion IDs (-1 = no religion, 0+ = religion ID)
 
     # Calendar and simulation control fields
     date_month: int = 1
@@ -36,6 +35,12 @@ class WorldState:
 
     def __post_init__(self) -> None:
         expected = (self.height, self.width)
+        if self.settlement_map is None:
+            self.settlement_map = np.zeros(expected, dtype=np.uint8)
+        if self.culture_map is None:
+            self.culture_map = np.full(expected, -1, dtype=np.int32)
+        if self.religion_map is None:
+            self.religion_map = np.full(expected, -1, dtype=np.int32)
         checks = (
             ("height_map", self.height_map, np.float32),
             ("biome_map", self.biome_map, np.uint8),
@@ -82,6 +87,8 @@ class WorldState:
             "owner_map": self.owner_map,
             "pop_map": self.pop_map,
             "settlement_map": self.settlement_map,
+            "culture_map": self.culture_map,
+            "religion_map": self.religion_map,
             "date_m": np.int32(self.date_month),
             "date_d": np.int32(self.date_day),
             "date_y": np.int32(self.date_year),
@@ -153,8 +160,17 @@ class WorldState:
         if "settlement_map" in data:
             settlement_map = check("settlement_map", data["settlement_map"], np.uint8)
         else:
-            # Initialize as all hamlets for existing saves
             settlement_map = np.zeros(expected, dtype=np.uint8)
+
+        if "culture_map" in data:
+            culture_map = check("culture_map", data["culture_map"], np.int32)
+        else:
+            culture_map = np.full(expected, -1, dtype=np.int32)
+
+        if "religion_map" in data:
+            religion_map = check("religion_map", data["religion_map"], np.int32)
+        else:
+            religion_map = np.full(expected, -1, dtype=np.int32)
 
         return cls(
             width=width,
@@ -166,6 +182,8 @@ class WorldState:
             owner_map=owner_map,
             pop_map=pop_map,
             settlement_map=settlement_map,
+            culture_map=culture_map,
+            religion_map=religion_map,
             sea_level=sea_level,
             hex_radius=hex_radius,
             date_month=date_m,
@@ -231,6 +249,9 @@ def save_npz(ws: WorldState, path: str) -> None:
         biome_map=ws.biome_map,
         owner_map=ws.owner_map,
         pop_map=ws.pop_map,
+        settlement_map=ws.settlement_map,
+        culture_map=ws.culture_map,
+        religion_map=ws.religion_map,
         date_m=np.array(ws.date_month, dtype=np.int32),
         date_d=np.array(ws.date_day, dtype=np.int32),
         date_y=np.array(ws.date_year, dtype=np.int32),
@@ -313,6 +334,18 @@ def load_npz(path: str) -> WorldState:
         biome_map = fetch("biome_map", np.uint8)
         owner_map = fetch("owner_map", np.int32)
         pop_map = fetch("pop_map", np.float32)
+        if "settlement_map" in data.files:
+            settlement_map = fetch("settlement_map", np.uint8)
+        else:
+            settlement_map = np.zeros(expected, dtype=np.uint8)
+        if "culture_map" in data.files:
+            culture_map = fetch("culture_map", np.int32)
+        else:
+            culture_map = np.full(expected, -1, dtype=np.int32)
+        if "religion_map" in data.files:
+            religion_map = fetch("religion_map", np.int32)
+        else:
+            religion_map = np.full(expected, -1, dtype=np.int32)
 
     return WorldState(
         width=width,
@@ -323,6 +356,9 @@ def load_npz(path: str) -> WorldState:
         biome_map=biome_map,
         owner_map=owner_map,
         pop_map=pop_map,
+        settlement_map=settlement_map,
+        culture_map=culture_map,
+        religion_map=religion_map,
         sea_level=sea_level,
         hex_radius=hex_radius,
         date_month=date_m,
