@@ -27,25 +27,24 @@ logger = logging.getLogger(__name__)
 
 Coord = Tuple[int, int]  # (q, r) - axial hex coordinates: q=column, r=row
 
-def _convert_biome_from_save(biome_value) -> Biome:
-    """Convert biome from save file (int or string) to Biome enum."""
-    if isinstance(biome_value, int):
-        try:
-            return Biome(biome_value)
-        except ValueError:
-            return Biome.OCEAN
-    elif isinstance(biome_value, str):
-        # Handle old string format
-        biome_map = {
-            "ocean": Biome.OCEAN,
-            "grass": Biome.GRASS,
-            "coast": Biome.COAST, 
-            "mountain": Biome.MOUNTAIN,
-            "desert": Biome.DESERT
-        }
-        return biome_map.get(biome_value.lower(), Biome.OCEAN)
-    else:
-        return Biome.OCEAN
+
+def _convert_biome_from_save(biome_value) -> str:
+    """Normalize biome value from save files to a lowercase string.
+
+    Older saves may encode biomes as integers (from ``worldgen.biomes.Biome``
+    enums) while newer versions use plain strings.  This helper accepts either
+    form and always returns a canonical string to avoid ``int()`` casts on
+    arbitrary data.
+    """
+    if isinstance(biome_value, str):
+        return biome_value.lower()
+    # Handle ``Biome`` enums or raw integers
+    try:
+        return Biome(int(biome_value)).name.lower()
+    except Exception:
+        if hasattr(biome_value, "name"):
+            return str(biome_value.name).lower()
+        return "ocean"
 
 
 # =============================== DATA TYPES ===================================
@@ -55,14 +54,24 @@ class TileHex:
     q: int
     r: int
     height: float = 0.0
-    biome: Biome = Biome.OCEAN
+    biome: str = "ocean"
     pop: int = 0
     owner: Optional[int] = None  # civ_id or None
     feature: Optional[str] = None
     _pop_float: float = field(default=0.0, init=False)
-    
-    def __post_init__(self):
+
+    def __post_init__(self) -> None:
+        # Ensure the internal float mirror matches the initial population
         self._pop_float = float(self.pop)
+
+    def __setattr__(self, name, value):
+        # Keep _pop_float in sync whenever ``pop`` is updated
+        if name == "pop":
+            try:
+                object.__setattr__(self, "_pop_float", float(value))
+            except Exception:
+                object.__setattr__(self, "_pop_float", 0.0)
+        object.__setattr__(self, name, value)
 
 # Backwards compatibility
 Tile = TileHex
@@ -313,7 +322,8 @@ class SimulationEngine:
                 pop_int = 0
             if pop_int > POP_MAX:
                 pop_int = POP_MAX
-            t.pop = int(pop_int)
+            # Bypass __setattr__ to preserve fractional _pop_float across steps
+            object.__setattr__(t, "pop", int(pop_int))
 
         for cid, g in gains.items():
             civ = w.civs[cid]
@@ -533,9 +543,18 @@ class SimulationEngine:
             "calendar": {"year": w.calendar.year, "month": w.calendar.month, "day": w.calendar.day},
             "colonize_period_years": w.colonize_period_years,
             "colonize_elapsed": w.colonize_elapsed,
-            "tiles": [{"q": t.q, "r": t.r, "height": t.height, "biome": int(t.biome),
-                       "pop": t.pop, "owner": t.owner, "feature": t.feature}
-                      for t in w.tiles],
+            "tiles": [
+                {
+                    "q": t.q,
+                    "r": t.r,
+                    "height": t.height,
+                    "biome": _convert_biome_from_save(t.biome),
+                    "pop": t.pop,
+                    "owner": t.owner,
+                    "feature": t.feature,
+                }
+                for t in w.tiles
+            ],
             "civs": {
                 str(cid): {
                     "civ_id": c.civ_id,
@@ -560,6 +579,7 @@ class SimulationEngine:
             json.dump(data, f, indent=2)
 
     def load_json(self, path: str) -> None:
+        from sim.safe_parse import to_int, to_float
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         turn = data.get("turn", data.get("week", 0))
@@ -572,10 +592,20 @@ class SimulationEngine:
                       time_scale=time_scale, calendar=Calendar(**cal_data),
                       colonize_period_years=data.get("colonize_period_years", 0.25),
                       colonize_elapsed=data.get("colonize_elapsed", 0.0))
-            tiles = [TileHex(q=td["q"], r=td["r"], height=td.get("height", 0.0),
-                             biome=_convert_biome_from_save(td.get("biome", "ocean")), pop=td.get("pop", 0),
-                             owner=td.get("owner"), feature=td.get("feature"))
-                     for td in data["tiles"]]
+            tiles = []
+            for td in data["tiles"]:
+                owner_val = td.get("owner")
+                tiles.append(
+                    TileHex(
+                        q=td["q"],
+                        r=td["r"],
+                        height=to_float(td.get("height", 0.0)),
+                        biome=_convert_biome_from_save(td.get("biome", "ocean")),
+                        pop=to_int(td.get("pop", 0)),
+                        owner=to_int(owner_val, default=0) if owner_val is not None else None,
+                        feature=td.get("feature"),
+                    )
+                )
         else:
             w = World(width_hex=data["width"], height_hex=data["height"],
                       hex_size=data.get("hex_size", 1), sea_level=data.get("sea_level", 0.0),
@@ -583,11 +613,20 @@ class SimulationEngine:
                       time_scale=time_scale, calendar=Calendar(**cal_data),
                       colonize_period_years=data.get("colonize_period_years", 0.25),
                       colonize_elapsed=data.get("colonize_elapsed", 0.0))
-            tiles = [TileHex(q=td.get("q", td["x"]), r=td.get("r", td["y"]),
-                             height=td.get("height", 0.0), biome=_convert_biome_from_save(td.get("biome", "ocean")),
-                             pop=td.get("pop", 0), owner=td.get("owner"),
-                             feature=td.get("feature"))
-                     for td in data["tiles"]]
+            tiles = []
+            for td in data["tiles"]:
+                owner_val = td.get("owner")
+                tiles.append(
+                    TileHex(
+                        q=td.get("q", td["x"]),
+                        r=td.get("r", td["y"]),
+                        height=to_float(td.get("height", 0.0)),
+                        biome=_convert_biome_from_save(td.get("biome", "ocean")),
+                        pop=to_int(td.get("pop", 0)),
+                        owner=to_int(owner_val, default=0) if owner_val is not None else None,
+                        feature=td.get("feature"),
+                    )
+                )
         w.tiles = tiles
 
         # Civs with tech mirrors (true tech state loaded from blob below)
