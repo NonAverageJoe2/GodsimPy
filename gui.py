@@ -274,12 +274,16 @@ class GameGUI:
             psx, psy = self.project_point(sx, sy)
             if psx < -10 or psy < -10 or psx > sw + 10 or psy > sh + 10:
                 continue
-            col = OWNER_TINTS[a.civ_id % len(OWNER_TINTS)]
             rad = int(self.hex_px * 0.3 * zoom)
-            pygame.draw.circle(scr, (0, 0, 0), (psx, psy), rad + 2)
-            pygame.draw.circle(scr, col, (psx, psy), rad)
+            rect_w = rad * 2
+            rect_h = rad
+            rect = pygame.Rect(psx - rect_w // 2, psy - rect_h // 2, rect_w, rect_h)
+            pygame.draw.rect(scr, (255, 255, 255), rect)
+            pygame.draw.rect(scr, (0, 0, 0), rect, 2)
+            pygame.draw.line(scr, (0, 0, 0), rect.topleft, rect.bottomright, 2)
+            pygame.draw.line(scr, (0, 0, 0), rect.topright, rect.bottomleft, 2)
             if a is self.selected_army:
-                pygame.draw.circle(scr, (255, 255, 255), (psx, psy), rad + 3, 2)
+                pygame.draw.rect(scr, (255, 255, 255), rect.inflate(4, 4), 2)
 
         # HUD -----------------------------------------------------------------
         date = self.eng.world.calendar
