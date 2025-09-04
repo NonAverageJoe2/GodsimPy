@@ -8,6 +8,7 @@ from typing import Optional, Tuple
 import pygame
 
 from engine import SimulationEngine, Army
+from fixes.engine_integration_complete import apply_all_fixes
 from worldgen.hexgrid import axial_to_pixel, hex_polygon, pixel_to_axial
 
 BIOME_COLORS = [
@@ -34,6 +35,7 @@ class GameGUI:
         pygame.init()
         self.clock = pygame.time.Clock()
         self.eng = SimulationEngine(width=48, height=32, seed=1)
+        apply_all_fixes(engine)
         self.hex_px = 24
         self.zoom = 1.0
         self.camera_x = 0.0
