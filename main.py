@@ -53,16 +53,16 @@ def _to_rect_space(x: float, y: float, q: int, r_hex: float) -> Tuple[float, flo
     return x, y * DESKEW_Y - 0.5 * r_hex * q
 
 from sim.state import WorldState, load_npz, save_npz
-from sim.loop import advance_turn
 from sim.resources import biome_yields
 from sim.terrain import generate_features, describe_feature
 from sim.civilization import initialize_civs, make_palette
-from worldgen import axial_to_world_flat, build_world, build_biomes
+from worldgen import build_world, build_biomes
 from sim.state import from_worldgen
 from render import render_topdown, render_iso
 from render.render_topdown import render_topdown_height, render_topdown_political
-# NEW: pointy-top mapping for square-looking top-down
-from worldgen.hexgrid import axial_to_world_pointy
+from engine import SimulationEngine, Army, Civ
+from fixes.engine_integration_complete import apply_all_fixes
+from worldgen.biomes import Biome
 
 try:
     from gui.country_labels import CountryLabelRenderer
@@ -1324,6 +1324,10 @@ class GodsimGUI:
                         rng_seed=self.world_state.seed ^ (i * 9973 + 12345)
                     ))
 
+        # Engine with military features
+        self.engine = self._engine_from_state(self.world_state)
+        self.selected_army: Optional[Army] = None
+
         # Components
         self.camera = Camera()
         self.hex_renderer = HexRenderer(self.world_state)
@@ -1336,9 +1340,8 @@ class GodsimGUI:
         self.age_indicator = AgeProgressIndicator()
         self.tech_overlay = TechMapOverlay()
         self.tech_notifications = TechNotification()
-        # Attach a TechnologySystem if your sim exposes one:
-        # Preferred: engine sets world_state.tech_system
-        self.tech_system: Optional["TechnologySystem"] = getattr(self.world_state, "tech_system", None) if _TECH_AVAILABLE else None
+        # Attach the engine's TechnologySystem if available
+        self.tech_system: Optional["TechnologySystem"] = getattr(self.engine, "tech_system", None) if _TECH_AVAILABLE else None
 
         # Popup (optional)
         try:
@@ -1371,6 +1374,66 @@ class GodsimGUI:
         )
         biomes = build_biomes(height, sea, 0.8)
         return from_worldgen(height, biomes, sea, w, h, 12.0, seed)
+
+    def _engine_from_state(self, ws: WorldState) -> SimulationEngine:
+        """Build a SimulationEngine from the current ``WorldState``."""
+        eng = SimulationEngine(width=ws.width, height=ws.height, seed=ws.seed)
+        # Create civs in the engine mirroring GUI civs
+        for civ in self.civs:
+            eng.world.civs[civ.id] = Civ(civ_id=civ.id, name=civ.name,
+                                         stock_food=100, tiles=[])
+        # Populate tiles
+        for t in eng.world.tiles:
+            t.height = float(ws.height_map[t.r, t.q])
+            bval = int(ws.biome_map[t.r, t.q])
+            try:
+                t.biome = Biome(bval).name.lower()
+            except Exception:
+                t.biome = "grass"
+            owner = int(ws.owner_map[t.r, t.q])
+            t.owner = owner if owner >= 0 else None
+            if t.owner is not None and t.owner in eng.world.civs:
+                eng.world.civs[t.owner].tiles.append((t.q, t.r))
+            t.pop = int(ws.pop_map[t.r, t.q])
+        eng.world.sea_level = ws.sea_level
+        eng.world.time_scale = ws.time_scale
+        cal = eng.world.calendar
+        cal.year = ws.date_year
+        cal.month = ws.date_month
+        cal.day = ws.date_day
+        apply_all_fixes(eng)
+        return eng
+
+    def _sync_engine_to_state(self) -> None:
+        """Copy mutable state from engine back into world_state for rendering."""
+        ws = self.world_state
+        for t in self.engine.world.tiles:
+            ws.owner_map[t.r, t.q] = t.owner if t.owner is not None else -1
+            ws.pop_map[t.r, t.q] = float(t.pop)
+        cal = self.engine.world.calendar
+        ws.set_date_tuple(cal.month, cal.day, cal.year)
+        ws.turn = self.engine.world.turn
+        ws.time_scale = self.engine.world.time_scale
+
+    def _move_selection(self, dq: int, dr: int) -> None:
+        if not self.hex_renderer.selected_hex:
+            return
+        q, r = self.hex_renderer.selected_hex
+        nq, nr = q + dq, r + dr
+        if 0 <= nq < self.world_state.width and 0 <= nr < self.world_state.height:
+            self.hex_renderer.selected_hex = (nq, nr)
+            self.selected_army = None
+            for a in self.engine.world.armies:
+                if a.q == nq and a.r == nr:
+                    self.selected_army = a
+                    break
+
+    def _order_army(self, dq: int, dr: int) -> None:
+        if self.selected_army is None:
+            return
+        target = (self.selected_army.q + dq, self.selected_army.r + dr)
+        if self.engine.world.in_bounds(*target):
+            self.engine.set_army_target(self.selected_army, target)
 
     def _reconstruct_cultures_religions(self):
         """Reconstruct culture and religion objects from existing maps."""
@@ -1483,9 +1546,42 @@ class GodsimGUI:
                         event, self.tech_window,
                         self.info_panel.get_current_civ_id(self.civs)):
                     pass
-                # Toggle overlay with 'A' (optional UX)
-                elif _TECH_AVAILABLE and event.key == pygame.K_a:
+                # Spawn army with 'A'
+                elif event.key == pygame.K_a:
+                    if self.hex_renderer.selected_hex:
+                        q, r = self.hex_renderer.selected_hex
+                        owner = int(self.world_state.owner_map[r, q])
+                        if owner >= 0:
+                            try:
+                                self.selected_army = self.engine.add_army(owner, (q, r))
+                                self._sync_engine_to_state()
+                            except Exception:
+                                pass
+                # Toggle tech overlay with 'O'
+                elif _TECH_AVAILABLE and event.key == pygame.K_o:
                     self.tech_overlay.toggle()
+                elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                    if self.hex_renderer.selected_hex:
+                        q, r = self.hex_renderer.selected_hex
+                        self.selected_army = None
+                        for a in self.engine.world.armies:
+                            if a.q == q and a.r == r:
+                                self.selected_army = a
+                                break
+                elif event.key in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_UP, pygame.K_DOWN):
+                    dq = dr = 0
+                    if event.key == pygame.K_LEFT:
+                        dq = -1
+                    elif event.key == pygame.K_RIGHT:
+                        dq = 1
+                    elif event.key == pygame.K_UP:
+                        dr = -1
+                    elif event.key == pygame.K_DOWN:
+                        dr = 1
+                    if pygame.key.get_mods() & pygame.KMOD_SHIFT:
+                        self._order_army(dq, dr)
+                    else:
+                        self._move_selection(dq, dr)
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 events_handled = True
@@ -1525,6 +1621,12 @@ class GodsimGUI:
                                 self.hex_popup.hide()
                         self.mouse_dragging = True
                         self.drag_start = event.pos
+                        # Select army on clicked hex if present
+                        self.selected_army = None
+                        for a in self.engine.world.armies:
+                            if a.q == hex_pos[0] and a.r == hex_pos[1]:
+                                self.selected_army = a
+                                break
 
                 elif event.button == 4:  # wheel up
                     # Use smaller zoom steps for smoother zooming
@@ -1546,6 +1648,17 @@ class GodsimGUI:
                     if event.pos[1] < render_height and event.pos[0] < render_width:
                         self.camera.zoom_at(-0.1, event.pos[0], event.pos[1], render_width, render_height)
                     self.tech_window.handle_scroll(-1)
+                elif event.button == 3 and self.selected_army is not None:
+                    render_width = self.screen.get_width()
+                    render_height = self.screen.get_height() - self.control_panel.height
+                    if event.pos[1] < render_height and event.pos[0] < render_width:
+                        wx, wy = self.camera.screen_to_world(
+                            event.pos[0], event.pos[1],
+                            render_width, render_height
+                        )
+                        hex_pos = self.hex_renderer.get_hex_at_point(wx, wy)
+                        if hex_pos:
+                            self.engine.set_army_target(self.selected_army, hex_pos)
 
             elif event.type == pygame.MOUSEBUTTONUP:
                 events_handled = True
@@ -1583,7 +1696,13 @@ class GodsimGUI:
             current_time = pygame.time.get_ticks()
             adjusted = max(1, self.update_interval // max(1, self.control_panel.game_speed))
             if current_time - self.last_update > adjusted:
-                advance_turn(self.world_state, feature_map=self.feature_map, steps=1)
+                # Step the simulation engine and mirror state back for rendering
+                self.engine.world.time_scale = self.world_state.time_scale
+                try:
+                    self.engine.advance_turn()
+                except Exception:
+                    pass
+                self._sync_engine_to_state()
                 self.last_update = current_time
                 simulation_updated = True
 
@@ -1621,6 +1740,22 @@ class GodsimGUI:
                 civs=self.civs
             )
 
+        # Draw armies on top of the map
+        if not self.isometric_mode:
+            for a in self.engine.world.armies:
+                cx, cy = _evenq_center(a.q, a.r, self.hex_renderer.hex_radius)
+                sx, sy = self.camera.world_to_screen(cx, cy, render_width, render_height)
+                rad = int(self.hex_renderer.hex_radius * 0.3 * self.camera.zoom)
+                rect_w = rad * 2
+                rect_h = rad
+                rect = pygame.Rect(sx - rect_w // 2, sy - rect_h // 2, rect_w, rect_h)
+                pygame.draw.rect(map_surface, (255, 255, 255), rect)
+                pygame.draw.rect(map_surface, (0, 0, 0), rect, 2)
+                pygame.draw.line(map_surface, (0, 0, 0), rect.topleft, rect.bottomright, 2)
+                pygame.draw.line(map_surface, (0, 0, 0), rect.topright, rect.bottomleft, 2)
+                if a is self.selected_army:
+                    pygame.draw.rect(map_surface, (255, 255, 255), rect.inflate(4, 4), 2)
+
         self.screen.blit(map_surface, (0, 0))
 
         # Panels
@@ -1657,6 +1792,12 @@ class GodsimGUI:
         fps = int(self.clock.get_fps())
         fps_text = pygame.font.Font(None, 20).render(f"FPS: {fps}", True, (200, 200, 200))
         self.screen.blit(fps_text, (10, 10))
+        if self.selected_army is not None and self.selected_army in self.engine.world.armies:
+            info = (f"Army civ:{self.selected_army.civ_id} "
+                    f"str:{self.selected_army.strength} "
+                    f"tgt:{self.selected_army.target}")
+            info_text = pygame.font.Font(None, 20).render(info, True, (200, 200, 200))
+            self.screen.blit(info_text, (10, 30))
 
         pygame.display.flip()
 
