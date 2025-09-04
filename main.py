@@ -1053,117 +1053,105 @@ class HexRenderer:
 
 
 class InfoPanel:
-    """Right-side information panel for civilization and tile info."""
-    def __init__(self, width: int = 300):
-        self.width = width
+    """Expandable panel showing civilization details."""
+
+    def __init__(self):
         self.font_title = pygame.font.Font(None, 24)
         self.font_normal = pygame.font.Font(None, 18)
         self.font_small = pygame.font.Font(None, 16)
-        self.collapsed = False
-        self.selected_tile: Optional[Tuple[int, int]] = None
-        self.feature_map: Optional[np.ndarray] = None
+        self.expanded = False
+        self.current_civ_index = 0
+        self.collapsed_rect = pygame.Rect(10, 40, 120, 30)
+        self.expanded_size = 220
+        self.expanded_rect = self.collapsed_rect.copy()
+        self.change_civ_rect = pygame.Rect(0, 0, 0, 0)
+        self.close_rect = pygame.Rect(0, 0, 0, 0)
+
+    def get_current_civ_id(self, civs: List) -> Optional[int]:
+        if not civs:
+            return None
+        self.current_civ_index %= len(civs)
+        return civs[self.current_civ_index].id
 
     def draw(self, surface: pygame.Surface, world_state: WorldState, civs: List,
-             tech_system: Optional["TechnologySystem"] = None):
-        panel_height = surface.get_height()
-        panel_x = surface.get_width() - self.width
-
-        # Background
-        panel_rect = pygame.Rect(panel_x, 0, self.width, panel_height)
-        pygame.draw.rect(surface, (30, 30, 40), panel_rect)
-        pygame.draw.rect(surface, (60, 60, 80), panel_rect, 2)
-
-        # Collapse toggle
-        button_rect = pygame.Rect(panel_x + 5, 5, 30, 20)
-        pygame.draw.rect(surface, (50, 50, 70), button_rect)
-        arrow = "<" if not self.collapsed else ">"
-        arrow_text = self.font_small.render(arrow, True, (200, 200, 200))
-        surface.blit(arrow_text, (panel_x + 15, 7))
-
-        if self.collapsed:
+             cultures: List, religions: List):
+        if not self.expanded:
+            pygame.draw.rect(surface, (30, 30, 40), self.collapsed_rect)
+            pygame.draw.rect(surface, (60, 60, 80), self.collapsed_rect, 2)
+            txt = self.font_small.render("Info", True, (200, 200, 200))
+            surface.blit(txt, (self.collapsed_rect.x + 35, self.collapsed_rect.y + 7))
             return
 
-        title = self.font_title.render("INFO", True, (255, 255, 255))
-        surface.blit(title, (panel_x + 45, 5))
+        self.expanded_rect = pygame.Rect(
+            self.collapsed_rect.x, self.collapsed_rect.y,
+            self.expanded_size, self.expanded_size
+        )
+        pygame.draw.rect(surface, (30, 30, 40), self.expanded_rect)
+        pygame.draw.rect(surface, (60, 60, 80), self.expanded_rect, 2)
 
-        y_offset = 35
+        # Close button
+        self.close_rect = pygame.Rect(
+            self.expanded_rect.right - 25, self.expanded_rect.y + 5, 20, 20
+        )
+        pygame.draw.rect(surface, (80, 50, 50), self.close_rect)
+        x_txt = self.font_small.render("X", True, (220, 220, 220))
+        surface.blit(x_txt, (self.close_rect.x + 6, self.close_rect.y + 2))
 
-        # WORLD
-        self._draw_section_header(surface, "WORLD", panel_x + 10, y_offset)
-        y_offset += 25
+        # Change civ button
+        self.change_civ_rect = pygame.Rect(
+            self.expanded_rect.x + 10, self.expanded_rect.y + 10, 100, 25
+        )
+        pygame.draw.rect(surface, (50, 50, 70), self.change_civ_rect)
+        btn_txt = self.font_small.render("Change Civ", True, (200, 200, 200))
+        surface.blit(btn_txt, btn_txt.get_rect(center=self.change_civ_rect.center))
 
-        m, d, y = world_state.get_date_tuple()
-        self._draw_text(surface, f"Date: {m}/{d}/{y}", panel_x + 15, y_offset); y_offset += 20
-        self._draw_text(surface, f"Turn: {world_state.turn}", panel_x + 15, y_offset); y_offset += 20
-        self._draw_text(surface, f"Time Scale: {world_state.time_scale}", panel_x + 15, y_offset); y_offset += 30
-
-        total_pop = world_state.pop_map.sum()
-        owned_tiles = (world_state.owner_map >= 0).sum()
-        self._draw_section_header(surface, "STATISTICS", panel_x + 10, y_offset); y_offset += 25
-        self._draw_text(surface, f"Total Population: {int(total_pop)}", panel_x + 15, y_offset); y_offset += 20
-        self._draw_text(surface, f"Owned Tiles: {owned_tiles}", panel_x + 15, y_offset); y_offset += 30
-
-        # CIVS
+        civ = None
         if civs:
-            self._draw_section_header(surface, "CIVILIZATIONS", panel_x + 10, y_offset); y_offset += 25
-            for civ in civs[:5]:
-                civ_pop = world_state.pop_map[world_state.owner_map == civ.id].sum()
-                civ_tiles = (world_state.owner_map == civ.id).sum()
-                pygame.draw.rect(surface, civ.color, pygame.Rect(panel_x + 15, y_offset, 12, 12))
-                self._draw_text(surface, f"{civ.name}: {int(civ_pop)} pop, {civ_tiles} tiles",
-                                panel_x + 32, y_offset, size='small')
-                y_offset += 18
-            y_offset += 20
+            self.current_civ_index %= len(civs)
+            civ = civs[self.current_civ_index]
 
-        # TILE
-        if self.selected_tile:
-            q, r = self.selected_tile
-            self._draw_section_header(surface, f"TILE ({q}, {r})", panel_x + 10, y_offset); y_offset += 25
-            biome_names = {0: "Grassland", 1: "Coast", 2: "Mountain", 3: "Ocean", 4: "Desert"}
-            biome = world_state.biome_map[r, q]
-            self._draw_text(surface, f"Biome: {biome_names.get(biome, 'Unknown')}", panel_x + 15, y_offset); y_offset += 20
+        x = self.expanded_rect.x + 10
+        y = self.change_civ_rect.bottom + 10
+        if civ:
+            culture_name = "Unknown"
+            if 0 <= civ.culture_id < len(cultures):
+                culture_name = cultures[civ.culture_id].name
+            religion_name = "Unknown"
+            if 0 <= civ.religion_id < len(religions):
+                religion_name = religions[civ.religion_id].name
+            total_pop = int(world_state.pop_map[world_state.owner_map == civ.id].sum())
+            male = int(total_pop * 0.5)
+            female = total_pop - male
+            self._draw_text(surface, f"Name: {civ.name}", x, y); y += 20
+            self._draw_text(surface, f"Main Religion: {religion_name}", x, y); y += 20
+            self._draw_text(surface, f"Main Culture: {culture_name}", x, y); y += 20
+            self._draw_text(surface, f"Male Pop: {male}", x, y); y += 20
+            self._draw_text(surface, f"Female Pop: {female}", x, y); y += 20
+            gov = getattr(civ, "government", "Unknown")
+            self._draw_text(surface, f"Government: {gov}", x, y); y += 20
+            society = getattr(civ, "society", "Unknown")
+            self._draw_text(surface, f"Society: {society}", x, y)
+        else:
+            self._draw_text(surface, "No civilizations", x, y)
 
-            if self.feature_map is not None:
-                feature = self.feature_map[r, q]
-                feature_name = describe_feature(feature)
-                if feature_name != "None":
-                    self._draw_text(surface, f"Feature: {feature_name}", panel_x + 15, y_offset); y_offset += 20
+    def _draw_text(self, surface: pygame.Surface, text: str, x: int, y: int):
+        surface.blit(self.font_normal.render(text, True, (200, 200, 200)), (x, y))
 
-            owner = world_state.owner_map[r, q]
-            if 0 <= owner < len(civs):
-                self._draw_text(surface, f"Owner: {civs[owner].name}", panel_x + 15, y_offset); y_offset += 20
-            else:
-                self._draw_text(surface, "Owner: None", panel_x + 15, y_offset); y_offset += 20
+    def handle_click(self, mouse_x: int, mouse_y: int, civs: List) -> bool:
+        if not self.expanded:
+            if self.collapsed_rect.collidepoint(mouse_x, mouse_y):
+                self.expanded = True
+                return True
+            return False
 
-            pop = world_state.pop_map[r, q]
-            self._draw_text(surface, f"Population: {int(pop)}", panel_x + 15, y_offset); y_offset += 20
-
-            yields = biome_yields(world_state.biome_map)
-            food = yields["food"][r, q]; prod = yields["prod"][r, q]
-            self._draw_text(surface, f"Food: {food:.2f}", panel_x + 15, y_offset); y_offset += 20
-            self._draw_text(surface, f"Production: {prod:.2f}", panel_x + 15, y_offset); y_offset += 10
-
-            # --- TECH SECTION (only if tech_system present & tile owned) ---
-            if owner >= 0 and tech_system is not None:
-                y_offset = TechInfoPanel.draw_tech_info(
-                    surface, panel_x + 10, y_offset + 10, self.width,
-                    owner, tech_system,
-                    self.font_normal, self.font_normal, self.font_small
-                )
-
-    def _draw_section_header(self, surface: pygame.Surface, text: str, x: int, y: int):
-        header = self.font_normal.render(text, True, (200, 200, 100))
-        surface.blit(header, (x, y))
-        pygame.draw.line(surface, (100, 100, 50), (x, y + 20), (x + self.width - 30, y + 20), 1)
-
-    def _draw_text(self, surface: pygame.Surface, text: str, x: int, y: int,
-                   color: Tuple[int, int, int] = (180, 180, 180), size: str = 'normal'):
-        font = self.font_small if size == 'small' else self.font_normal
-        surface.blit(font.render(text, True, color), (x, y))
-
-    def handle_click(self, mouse_x: int, screen_width: int) -> bool:
-        if screen_width - self.width < mouse_x < screen_width - self.width + 40:
-            self.collapsed = not self.collapsed
+        if self.close_rect.collidepoint(mouse_x, mouse_y):
+            self.expanded = False
+            return True
+        if self.change_civ_rect.collidepoint(mouse_x, mouse_y):
+            if civs:
+                self.current_civ_index = (self.current_civ_index + 1) % len(civs)
+            return True
+        if self.expanded_rect.collidepoint(mouse_x, mouse_y):
             return True
         return False
 
@@ -1340,13 +1328,11 @@ class GodsimGUI:
         self.camera = Camera()
         self.hex_renderer = HexRenderer(self.world_state)
         self.info_panel = InfoPanel()
-        self.info_panel.feature_map = self.feature_map
         self.control_panel = ControlPanel()
         self.isometric_mode = False
 
         # --- Tech GUI bits (safe if technology not available) ---
         self.tech_window = TechTreeWindow()
-        self.tech_info = TechInfoPanel()
         self.age_indicator = AgeProgressIndicator()
         self.tech_overlay = TechMapOverlay()
         self.tech_notifications = TechNotification()
@@ -1452,14 +1438,6 @@ class GodsimGUI:
         
         return cultures, religions
 
-    def _selected_owner_id(self) -> Optional[int]:
-        """Helper: civ id of currently selected tile owner."""
-        if not self.hex_renderer.selected_hex:
-            return None
-        q, r = self.hex_renderer.selected_hex
-        owner = self.world_state.owner_map[r, q]
-        return int(owner) if owner >= 0 else None
-
     def handle_events(self):
         events_handled = False
         for event in pygame.event.get():
@@ -1501,7 +1479,9 @@ class GodsimGUI:
                     save_npz(self.world_state, "quicksave.npz")
                     print("World saved to quicksave.npz")
                 # --- Tech hotkey: open/close tree for selected civ (if tech available) ---
-                elif _TECH_AVAILABLE and TechHotkeys.handle_keypress(event, self.tech_window, self._selected_owner_id()):
+                elif _TECH_AVAILABLE and TechHotkeys.handle_keypress(
+                        event, self.tech_window,
+                        self.info_panel.get_current_civ_id(self.civs)):
                     pass
                 # Toggle overlay with 'A' (optional UX)
                 elif _TECH_AVAILABLE and event.key == pygame.K_a:
@@ -1518,7 +1498,7 @@ class GodsimGUI:
                         if self.hex_popup.handle_click(event.pos[0], event.pos[1]):
                             continue
                     # Panels
-                    if self.info_panel.handle_click(event.pos[0], self.screen.get_width()):
+                    if self.info_panel.handle_click(event.pos[0], event.pos[1], self.civs):
                         continue
                     action = self.control_panel.handle_click(event.pos[0], event.pos[1], self.screen.get_height(), self.world_state)
                     if action:
@@ -1526,8 +1506,6 @@ class GodsimGUI:
                     # Select hex / start drag
                     # Calculate map rendering area (same as in render method)
                     render_width = self.screen.get_width()
-                    if not self.info_panel.collapsed:
-                        render_width -= self.info_panel.width
                     render_height = self.screen.get_height() - self.control_panel.height
                     
                     if event.pos[1] < render_height and event.pos[0] < render_width:
@@ -1539,7 +1517,6 @@ class GodsimGUI:
                         hex_pos = self.hex_renderer.get_hex_at_point(wx, wy)
                         if hex_pos:
                             self.hex_renderer.selected_hex = hex_pos
-                            self.info_panel.selected_tile = hex_pos
                             if self.hex_popup:
                                 sx, sy = self.camera.world_to_screen(wx, wy, render_width, render_height)
                                 self.hex_popup.show(hex_pos[0], hex_pos[1], sx, sy)
@@ -1553,8 +1530,6 @@ class GodsimGUI:
                     # Use smaller zoom steps for smoother zooming
                     # Use map surface dimensions for zoom focus point
                     render_width = self.screen.get_width()
-                    if not self.info_panel.collapsed:
-                        render_width -= self.info_panel.width
                     render_height = self.screen.get_height() - self.control_panel.height
                     
                     # Only zoom if mouse is over map area
@@ -1565,8 +1540,6 @@ class GodsimGUI:
                     # Use smaller zoom steps for smoother zooming
                     # Use map surface dimensions for zoom focus point
                     render_width = self.screen.get_width()
-                    if not self.info_panel.collapsed:
-                        render_width -= self.info_panel.width
                     render_height = self.screen.get_height() - self.control_panel.height
                     
                     # Only zoom if mouse is over map area
@@ -1589,8 +1562,6 @@ class GodsimGUI:
                 else:
                     # Calculate map rendering area (same as in render method)
                     render_width = self.screen.get_width()
-                    if not self.info_panel.collapsed:
-                        render_width -= self.info_panel.width
                     render_height = self.screen.get_height() - self.control_panel.height
                     
                     if (event.pos[1] < render_height and event.pos[0] < render_width):
@@ -1629,8 +1600,6 @@ class GodsimGUI:
 
         # Map area dims
         render_width = self.screen.get_width()
-        if not self.info_panel.collapsed:
-            render_width -= self.info_panel.width
         render_height = self.screen.get_height() - self.control_panel.height
         map_surface = pygame.Surface((render_width, render_height))
 
@@ -1655,7 +1624,7 @@ class GodsimGUI:
         self.screen.blit(map_surface, (0, 0))
 
         # Panels
-        self.info_panel.draw(self.screen, self.world_state, self.civs, tech_system=self.tech_system)
+        self.info_panel.draw(self.screen, self.world_state, self.civs, self.cultures, self.religions)
         self.control_panel.draw(self.screen, self.world_state)
 
         # Hex popup

@@ -2,7 +2,7 @@
 """Integration of the age cohort system into the main game."""
 
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 import numpy as np
 from sim.cohorts import (
     init_from_total, step_cohorts, totals_from_cohorts,
