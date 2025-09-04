@@ -1,9 +1,18 @@
 # biomes.py - classify heightmap to simple biomes
 from __future__ import annotations
 import numpy as np
+from enum import IntEnum
 from .hexgrid import neighbors_axial, in_bounds
 
-GRASS, COAST, MOUNTAIN, OCEAN = 0, 1, 2, 3
+class Biome(IntEnum):
+    GRASS = 0
+    COAST = 1
+    MOUNTAIN = 2
+    OCEAN = 3
+    DESERT = 4
+
+# Backwards compatibility constants
+GRASS, COAST, MOUNTAIN, OCEAN = Biome.GRASS, Biome.COAST, Biome.MOUNTAIN, Biome.OCEAN
 
 def build_biomes(height: np.ndarray, sea_level: float, mountain_h: float) -> np.ndarray:
     H, W = height.shape

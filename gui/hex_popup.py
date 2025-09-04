@@ -4,12 +4,6 @@
 import pygame
 import numpy as np
 from typing import Optional, Tuple, List
-import os
-import sys
-
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
 from sim.state import WorldState
 from sim.resources import biome_yields, carrying_capacity, yields_with_features
 from sim.terrain import describe_feature

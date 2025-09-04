@@ -20,6 +20,9 @@ class WorldState:
     biome_map: np.ndarray
     owner_map: np.ndarray
     pop_map: np.ndarray
+    settlement_map: np.ndarray  # 0=hamlet, 1=village, 2=town, 3=city, 4=capital
+    culture_map: np.ndarray     # Culture IDs (-1 = no culture, 0+ = culture ID)
+    religion_map: np.ndarray    # Religion IDs (-1 = no religion, 0+ = religion ID)
 
     sea_level: float
     hex_radius: float
@@ -38,6 +41,9 @@ class WorldState:
             ("biome_map", self.biome_map, np.uint8),
             ("owner_map", self.owner_map, np.int32),
             ("pop_map", self.pop_map, np.float32),
+            ("settlement_map", self.settlement_map, np.uint8),
+            ("culture_map", self.culture_map, np.int32),
+            ("religion_map", self.religion_map, np.int32),
         )
         for name, arr, dtype in checks:
             if arr.shape != expected:
@@ -75,6 +81,7 @@ class WorldState:
             "biome_map": self.biome_map,
             "owner_map": self.owner_map,
             "pop_map": self.pop_map,
+            "settlement_map": self.settlement_map,
             "date_m": np.int32(self.date_month),
             "date_d": np.int32(self.date_day),
             "date_y": np.int32(self.date_year),
@@ -97,6 +104,7 @@ class WorldState:
             "owner_map",
             "pop_map",
         }
+        # settlement_map is optional for backwards compatibility
         missing = required.difference(data)
         if missing:
             raise ValueError(f"missing keys: {sorted(missing)}")
@@ -140,6 +148,13 @@ class WorldState:
         biome_map = check("biome_map", data["biome_map"], np.uint8)
         owner_map = check("owner_map", data["owner_map"], np.int32)
         pop_map = check("pop_map", data["pop_map"], np.float32)
+        
+        # Handle settlement_map for backwards compatibility
+        if "settlement_map" in data:
+            settlement_map = check("settlement_map", data["settlement_map"], np.uint8)
+        else:
+            # Initialize as all hamlets for existing saves
+            settlement_map = np.zeros(expected, dtype=np.uint8)
 
         return cls(
             width=width,
@@ -150,6 +165,7 @@ class WorldState:
             biome_map=biome_map,
             owner_map=owner_map,
             pop_map=pop_map,
+            settlement_map=settlement_map,
             sea_level=sea_level,
             hex_radius=hex_radius,
             date_month=date_m,
@@ -172,6 +188,18 @@ def from_worldgen(height_map: np.ndarray, biome_map: np.ndarray, sea_level: floa
         raise ValueError(f"biome_map shape {b.shape} != {expected}")
     owner = np.full(expected, -1, dtype=np.int32)
     pop = np.zeros(expected, dtype=np.float32)
+    settlements = np.zeros(expected, dtype=np.uint8)  # All start as hamlets
+    
+    # Seed empty provinces with small populations
+    from .population_seeding import seed_empty_provinces
+    pop = seed_empty_provinces(owner, pop, b, seed=seed + 12345)
+    
+    # Generate cultures and religions
+    from .cultures import create_cultures_and_religions
+    cultures, religions, culture_map, religion_map = create_cultures_and_religions(
+        height, width, b, num_cultures=8, num_religions=5, seed=seed + 5000
+    )
+    
     return WorldState(
         width=width,
         height=height,
@@ -181,6 +209,9 @@ def from_worldgen(height_map: np.ndarray, biome_map: np.ndarray, sea_level: floa
         biome_map=b,
         owner_map=owner,
         pop_map=pop,
+        settlement_map=settlements,
+        culture_map=culture_map,
+        religion_map=religion_map,
         sea_level=float(sea_level),
         hex_radius=float(hex_radius),
     )

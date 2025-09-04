@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Resource yield calculations for biome and terrain feature layers."""
 
-from typing import Mapping, Dict
+from typing import Dict, Mapping
 
 import numpy as np
 
@@ -146,7 +146,11 @@ def apply_feature_modifiers(
     prod0 = np.ascontiguousarray(p_arr, dtype=np.float32)
     feat = fmap.astype(np.int64, copy=False)
 
-    mods = DEFAULT_FEATURE_MODS if modifiers is None else {int(k): (np.float32(v[0]), np.float32(v[1])) for k, v in modifiers.items()}
+    mods = (
+        DEFAULT_FEATURE_MODS
+        if modifiers is None
+        else {int(k): (np.float32(v[0]), np.float32(v[1])) for k, v in modifiers.items()}
+    )
     lut, max_key = _prepare_lut(mods, _FEATURE_FALLBACK)
 
     idx = np.where((feat >= 0) & (feat <= max_key), feat, max_key + 1)

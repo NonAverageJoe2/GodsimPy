@@ -7,15 +7,28 @@ import math
 import pygame
 import numpy as np
 from dataclasses import dataclass
-from typing import Optional, Tuple, Dict, List
+from typing import Optional, Tuple, Dict, List, Set
 from enum import Enum
 
+# ---- Optional technology integration -----------------------------------------
+# These imports are guarded. The UI will gracefully no-op if technology.py
+# (and its types) are unavailable or if no tech_system is connected to GUI/world.
+try:
+    from technology import TechnologySystem, Age, TechCategory  # type: ignore
+    _TECH_AVAILABLE = True
+except Exception:
+    TechnologySystem = object  # type: ignore
+    class Age:  # minimal compat stubs so hints/dicts work
+        DISSEMINATION = "DISSEMINATION"
+    class TechCategory:
+        pass
+    _TECH_AVAILABLE = False
+
 # --- top-down deskew helpers (used by HexRenderer) ---
-DESKEW_Y = 1.0 / math.sqrt(3.0)
-
 SQRT3 = math.sqrt(3.0)
+DESKEW_Y = 1.0 / SQRT3
 
-def _evenq_center(q: int, r: int, radius: float) -> tuple[float, float]:
+def _evenq_center(q: int, r: int, radius: float) -> Tuple[float, float]:
     """
     Center of a flat-top hex in an even-q offset layout.
     Produces a rectangular map boundary with regular hex shapes.
@@ -28,11 +41,11 @@ def _evenq_center(q: int, r: int, radius: float) -> tuple[float, float]:
     cy = r * vert + (hex_h * 0.5 if (q & 1) else 0.0) + hex_h * 0.5
     return cx, cy
 
-def _deskew(x: float, y: float) -> tuple[float, float]:
+def _deskew(x: float, y: float) -> Tuple[float, float]:
     # Cancel axial's built-in √3 vertical stretch so top-down looks rectangular
     return x, y * DESKEW_Y
 
-def _to_rect_space(x: float, y: float, q: int, r_hex: float) -> tuple[float, float]:
+def _to_rect_space(x: float, y: float, q: int, r_hex: float) -> Tuple[float, float]:
     """
     Convert raw axial pixel coords (flat-top) into rectangular top-down space:
       y' = y / √3  -  0.5 * r_hex * q
@@ -51,22 +64,470 @@ from render.render_topdown import render_topdown_height, render_topdown_politica
 # NEW: pointy-top mapping for square-looking top-down
 from worldgen.hexgrid import axial_to_world_pointy
 
-# Import hex popup if available
 try:
-    from gui.hex_popup import HexPopup
+    from gui.country_labels import CountryLabelRenderer
 except ImportError:
-    # Fallback if hex_popup.py is in same directory
-    try:
-        from hex_popup import HexPopup
-    except ImportError:
-        HexPopup = None
+    CountryLabelRenderer = None
 
+
+# ========================= Tech GUI Components ================================
+
+class TechTreeWindow:
+    """Window for displaying the technology tree."""
+    def __init__(self):
+        self.visible = False
+        self.selected_civ_id: Optional[int] = None
+        self.scroll_y = 0
+        self.width = 600
+        self.height = 500
+        self.padding = 20
+
+        # Fonts (init after pygame.init in GUI ctor)
+        self.font_title = pygame.font.Font(None, 24)
+        self.font_header = pygame.font.Font(None, 20)
+        self.font_normal = pygame.font.Font(None, 16)
+        self.font_small = pygame.font.Font(None, 14)
+
+        # Colors by category
+        self.category_colors = {
+            getattr(TechCategory, "AGRICULTURE", "AGRICULTURE"): (100, 200, 100),
+            getattr(TechCategory, "MILITARY", "MILITARY"): (200, 100, 100),
+            getattr(TechCategory, "ECONOMY", "ECONOMY"): (200, 200, 100),
+            getattr(TechCategory, "SCIENCE", "SCIENCE"): (100, 150, 200),
+            getattr(TechCategory, "CULTURE", "CULTURE"): (200, 100, 200),
+            getattr(TechCategory, "EXPLORATION", "EXPLORATION"): (150, 200, 200),
+            getattr(TechCategory, "INFRASTRUCTURE", "INFRASTRUCTURE"): (150, 150, 150),
+            getattr(TechCategory, "METALLURGY", "METALLURGY"): (200, 150, 100),
+        }
+
+    def show(self, civ_id: int):
+        self.visible = True
+        self.selected_civ_id = civ_id
+        self.scroll_y = 0
+
+    def hide(self):
+        self.visible = False
+
+    def draw(self, surface: pygame.Surface, tech_system: Optional["TechnologySystem"], civs_name_map: Dict[int, str]):
+        """Draw the tech tree window (safe if tech_system is None)."""
+        if not self.visible or self.selected_civ_id is None or tech_system is None:
+            return
+
+        # Calculate window position (centered)
+        screen_w, screen_h = surface.get_size()
+        x = (screen_w - self.width) // 2
+        y = (screen_h - self.height) // 2
+
+        # Create window surface
+        window = pygame.Surface((self.width, self.height))
+        window.fill((30, 30, 40))
+
+        # Draw border
+        pygame.draw.rect(window, (100, 100, 120), (0, 0, self.width, self.height), 3)
+
+        # Title bar
+        title_rect = pygame.Rect(0, 0, self.width, 35)
+        pygame.draw.rect(window, (50, 50, 70), title_rect)
+        pygame.draw.line(window, (100, 100, 120), (0, 35), (self.width, 35), 2)
+
+        # Close button
+        close_rect = pygame.Rect(self.width - 30, 5, 25, 25)
+        pygame.draw.rect(window, (200, 50, 50), close_rect)
+        close_text = self.font_normal.render("X", True, (255, 255, 255))
+        close_text_rect = close_text.get_rect(center=close_rect.center)
+        window.blit(close_text, close_text_rect)
+
+        civ_id = self.selected_civ_id
+        if civ_id not in tech_system.civ_states:
+            surface.blit(window, (x, y))
+            return
+
+        civ_name = civs_name_map.get(civ_id, f"Civ {civ_id}")
+        civ_state = tech_system.civ_states.get(civ_id)
+
+        # Title
+        title = f"{civ_name} - Technology Tree"
+        title_text = self.font_title.render(title, True, (255, 255, 255))
+        title_text_rect = title_text.get_rect(center=(self.width // 2, 17))
+        window.blit(title_text, title_text_rect)
+
+        # Age / progress
+        y_offset = 45
+        age_val = getattr(civ_state.current_age, "value", str(civ_state.current_age))
+        age_text = f"Current Age: {age_val}"
+        self._draw_text(window, age_text, self.padding, y_offset, self.font_header, (200, 200, 100))
+        y_offset += 25
+
+        tech_count_text = f"Technologies: {len(civ_state.researched_techs)}"
+        self._draw_text(window, tech_count_text, self.padding, y_offset, self.font_normal, (180, 180, 180))
+        y_offset += 20
+
+        # Current research
+        if civ_state.current_research:
+            current_tech = tech_system.tech_tree.technologies.get(civ_state.current_research)
+            if current_tech:
+                research_text = f"Researching: {current_tech.name}"
+                self._draw_text(window, research_text, self.padding, y_offset, self.font_normal, (150, 200, 150))
+                y_offset += 18
+
+                # Progress bar
+                bar_width = self.width - 2 * self.padding
+                bar_height = 15
+                bar_x = self.padding
+                bar_y = y_offset
+
+                pygame.draw.rect(window, (40, 40, 40), (bar_x, bar_y, bar_width, bar_height))
+                # civ_state.research_progress is points; cost is points
+                cost = max(1, int(getattr(current_tech, "research_cost", 1)))
+                progress_pct = float(getattr(civ_state, "research_progress", 0.0)) / float(cost)
+                fill_width = int(bar_width * min(1.0, progress_pct))
+                if fill_width > 0:
+                    pygame.draw.rect(window, (100, 200, 100), (bar_x, bar_y, fill_width, bar_height))
+                pygame.draw.rect(window, (80, 80, 80), (bar_x, bar_y, bar_width, bar_height), 1)
+
+                progress_text = f"{getattr(civ_state, 'research_progress', 0.0):.0f} / {cost}"
+                text_surf = self.font_small.render(progress_text, True, (255, 255, 255))
+                text_rect = text_surf.get_rect(center=(bar_x + bar_width // 2, bar_y + bar_height // 2))
+                window.blit(text_surf, text_rect)
+
+                y_offset += bar_height + 10
+        else:
+            self._draw_text(window, "No active research", self.padding, y_offset, self.font_normal, (150, 150, 150))
+            y_offset += 20
+
+        # Separator
+        pygame.draw.line(window, (60, 60, 80), (self.padding, y_offset), (self.width - self.padding, y_offset), 1)
+        y_offset += 10
+
+        # Available technologies
+        self._draw_text(window, "Available Technologies:", self.padding, y_offset, self.font_header, (150, 150, 255))
+        y_offset += 25
+
+        list_height = self.height - y_offset - 20
+        list_surface = pygame.Surface((self.width - 2 * self.padding, list_height))
+        list_surface.fill((25, 25, 35))
+
+        # Get available techs (guarded)
+        try:
+            available_techs = tech_system.tech_tree.get_available_technologies(
+                civ_state.researched_techs,
+                civ_state.current_age,
+                civ_state.available_resources
+            )
+        except Exception:
+            available_techs = []
+
+        tech_y = 5 - self.scroll_y
+        for tech in available_techs:
+            if -50 < tech_y < list_height:
+                tech_rect = pygame.Rect(5, tech_y, self.width - 2 * self.padding - 10, 45)
+                cat = getattr(tech, "category", None)
+                color = self.category_colors.get(cat, (100, 100, 100))
+                darker_color = tuple(c // 2 for c in color)
+                pygame.draw.rect(list_surface, darker_color, tech_rect)
+                pygame.draw.rect(list_surface, color, tech_rect, 1)
+
+                # Name
+                name = getattr(tech, "name", "Unknown Tech")
+                name_text = self.font_normal.render(name, True, (255, 255, 255))
+                list_surface.blit(name_text, (10, tech_y + 5))
+
+                # Cost
+                cost = getattr(tech, "research_cost", 0)
+                cost_text = self.font_small.render(f"Cost: {cost}", True, (200, 200, 200))
+                list_surface.blit(cost_text, (10, tech_y + 25))
+
+                # Category label
+                cat_name = getattr(cat, "name", str(cat)) if cat is not None else "Misc"
+                cat_text = self.font_small.render(cat_name, True, color)
+                list_surface.blit(cat_text, (self.width - 2 * self.padding - 100, tech_y + 25))
+            tech_y += 50
+
+        pygame.draw.rect(list_surface, (60, 60, 80), (0, 0, self.width - 2 * self.padding, list_height), 1)
+        window.blit(list_surface, (self.padding, y_offset))
+
+        # Scrollbar
+        total_height = len(available_techs) * 50 + 10
+        if total_height > list_height:
+            scrollbar_x = self.width - self.padding - 10
+            scrollbar_height = max(20, list_height * list_height // max(1, total_height))
+            scrollbar_y = y_offset + (self.scroll_y * list_height // max(1, total_height))
+            pygame.draw.rect(window, (60, 60, 60), (scrollbar_x, y_offset, 10, list_height))
+            pygame.draw.rect(window, (120, 120, 120), (scrollbar_x, scrollbar_y, 10, scrollbar_height))
+
+        # Blit
+        surface.blit(window, (x, y))
+
+    def _draw_text(self, surface: pygame.Surface, text: str, x: int, y: int,
+                   font: pygame.font.Font, color: Tuple[int, int, int]):
+        text_surface = font.render(text, True, color)
+        surface.blit(text_surface, (x, y))
+
+    def handle_click(self, mouse_x: int, mouse_y: int, screen_size: Tuple[int, int]) -> bool:
+        """Returns True if window was closed."""
+        if not self.visible:
+            return False
+        screen_w, screen_h = screen_size
+        window_x = (screen_w - self.width) // 2
+        window_y = (screen_h - self.height) // 2
+        close_x = window_x + self.width - 30
+        close_y = window_y + 5
+        if close_x <= mouse_x <= close_x + 25 and close_y <= mouse_y <= close_y + 25:
+            self.hide()
+            return True
+        return False
+
+    def handle_scroll(self, delta: int):
+        if self.visible:
+            self.scroll_y = max(0, self.scroll_y - delta * 20)
+
+
+class TechInfoPanel:
+    """Panel extension to show technology info in the main info panel."""
+    @staticmethod
+    def draw_tech_info(surface: pygame.Surface, x: int, y: int, width: int,
+                       civ_id: int, tech_system: Optional["TechnologySystem"],
+                       font_header: pygame.font.Font, font_normal: pygame.font.Font,
+                       font_small: pygame.font.Font) -> int:
+        if tech_system is None or civ_id not in getattr(tech_system, "civ_states", {}):
+            return y
+
+        state = tech_system.civ_states[civ_id]
+
+        header = font_header.render("TECHNOLOGY", True, (200, 200, 100))
+        surface.blit(header, (x, y))
+        pygame.draw.line(surface, (100, 100, 50), (x, y + 20), (x + width - 30, y + 20), 1)
+        y += 25
+
+        age_val = getattr(state.current_age, "value", str(state.current_age))
+        age_box = pygame.Rect(x + 5, y + 2, 10, 10)
+        pygame.draw.rect(surface, (150, 150, 150), age_box)
+
+        age_text = font_normal.render(f"Age: {age_val}", True, (180, 180, 180))
+        surface.blit(age_text, (x + 20, y))
+        y += 20
+
+        tech_text = font_normal.render(f"Technologies: {len(state.researched_techs)}", True, (180, 180, 180))
+        surface.blit(tech_text, (x + 5, y))
+        y += 20
+
+        if state.current_research:
+            tech = tech_system.tech_tree.technologies.get(state.current_research)
+            if tech:
+                research_text = font_small.render(f"Researching: {getattr(tech, 'name', 'Tech')}", True, (150, 200, 150))
+                surface.blit(research_text, (x + 5, y))
+                y += 18
+
+                bar_width = width - 40
+                bar_height = 8
+                bar_x = x + 5
+                bar_y = y
+                pygame.draw.rect(surface, (40, 40, 40), (bar_x, bar_y, bar_width, bar_height))
+                cost = max(1, int(getattr(tech, "research_cost", 1)))
+                progress = float(getattr(state, "research_progress", 0.0)) / float(cost)
+                fill_width = int(bar_width * min(1.0, progress))
+                if fill_width > 0:
+                    pygame.draw.rect(surface, (100, 200, 100), (bar_x, bar_y, fill_width, bar_height))
+                pygame.draw.rect(surface, (80, 80, 80), (bar_x, bar_y, bar_width, bar_height), 1)
+                y += bar_height + 5
+        else:
+            no_research_text = font_small.render("No active research", True, (150, 150, 150))
+            surface.blit(no_research_text, (x + 5, y))
+            y += 18
+
+        # Optional bonuses string if present on state
+        try:
+            bonuses = state.calculate_total_bonuses(tech_system.tech_tree)
+            lines = []
+            if getattr(bonuses, "food_multiplier", 1.0) > 1.0:
+                lines.append(f"Food: +{(bonuses.food_multiplier - 1)*100:.0f}%")
+            if getattr(bonuses, "production_multiplier", 1.0) > 1.0:
+                lines.append(f"Prod: +{(bonuses.production_multiplier - 1)*100:.0f}%")
+            if getattr(bonuses, "military_strength", 0) > 0:
+                lines.append(f"Military: +{bonuses.military_strength:.0f}")
+            if lines:
+                y += 5
+                bonus_text = font_small.render("Active Bonuses:", True, (200, 200, 100))
+                surface.blit(bonus_text, (x + 5, y))
+                y += 15
+                for line in lines:
+                    ln = font_small.render(line, True, (180, 200, 180))
+                    surface.blit(ln, (x + 10, y))
+                    y += 15
+        except Exception:
+            pass
+
+        y += 10
+        return y
+
+
+class TechHotkeys:
+    """Keyboard shortcuts for technology features."""
+    @staticmethod
+    def handle_keypress(event: pygame.event.Event,
+                        tech_window: TechTreeWindow,
+                        selected_civ_id: Optional[int]) -> bool:
+        if event.key == pygame.K_t:
+            if tech_window.visible:
+                tech_window.hide()
+            elif selected_civ_id is not None:
+                tech_window.show(selected_civ_id)
+            return True
+        return False
+
+
+class AgeProgressIndicator:
+    """Visual indicator for age progression."""
+    def __init__(self):
+        self.font = pygame.font.Font(None, 14)
+        # Simple, neutral color map (works even without full Age enum)
+        self.age_colors = {
+            getattr(Age, "DISSEMINATION", "DISSEMINATION"): (150, 100, 50),
+            getattr(Age, "COPPER", "COPPER"): (200, 150, 100),
+            getattr(Age, "BRONZE", "BRONZE"): (180, 140, 80),
+            getattr(Age, "IRON", "IRON"): (160, 160, 160),
+            getattr(Age, "CLASSICAL", "CLASSICAL"): (200, 180, 150),
+            getattr(Age, "MEDIEVAL", "MEDIEVAL"): (120, 120, 140),
+            getattr(Age, "RENAISSANCE", "RENAISSANCE"): (180, 150, 200),
+            getattr(Age, "INDUSTRIAL", "INDUSTRIAL"): (100, 100, 120),
+        }
+
+    def draw(self, surface: pygame.Surface, x: int, y: int,
+             civ_name: str, current_age, tech_count: int) -> None:
+        bg_rect = pygame.Rect(x, y, 200, 25)
+        pygame.draw.rect(surface, (30, 30, 40), bg_rect)
+        pygame.draw.rect(surface, (60, 60, 80), bg_rect, 1)
+
+        age_key = getattr(current_age, "name", current_age)
+        age_color = self.age_colors.get(age_key, (100, 100, 100))
+        age_rect = pygame.Rect(x + 2, y + 2, 21, 21)
+        pygame.draw.rect(surface, age_color, age_rect)
+
+        name_text = self.font.render(civ_name, True, (200, 200, 200))
+        surface.blit(name_text, (x + 28, y + 5))
+
+        tech_text = self.font.render(f"[{tech_count} techs]", True, (150, 150, 150))
+        surface.blit(tech_text, (x + 120, y + 5))
+
+        # Next-age progress (best-effort: requires min_techs on Age)
+        try:
+            next_age = current_age.next()
+            if next_age:
+                need = max(1, int(getattr(next_age, "min_techs_required", 1)))
+                progress = min(1.0, tech_count / float(need))
+                bar_x, bar_y, bar_w, bar_h = x + 28, y + 18, 165, 4
+                pygame.draw.rect(surface, (40, 40, 40), (bar_x, bar_y, bar_w, bar_h))
+                fill_w = int(bar_w * progress)
+                if fill_w > 0:
+                    next_color = self.age_colors.get(getattr(next_age, "name", "X"), (100, 100, 100))
+                    darker = tuple(c // 2 for c in next_color)
+                    pygame.draw.rect(surface, darker, (bar_x, bar_y, fill_w, bar_h))
+        except Exception:
+            pass
+
+
+class TechMapOverlay:
+    """Overlay for the hex map showing technological advancement (age dots)."""
+    def __init__(self):
+        self.show_age_overlay = False
+        self.font = pygame.font.Font(None, 12)
+
+    def toggle(self):
+        self.show_age_overlay = not self.show_age_overlay
+
+    def draw_hex_overlay(self, surface: pygame.Surface, hex_center: Tuple[int, int],
+                         hex_radius: float, owner_civ_id: Optional[int],
+                         tech_system: Optional["TechnologySystem"]) -> None:
+        if not self.show_age_overlay or owner_civ_id is None or tech_system is None:
+            return
+        if owner_civ_id not in getattr(tech_system, "civ_states", {}):
+            return
+        state = tech_system.civ_states[owner_civ_id]
+        # Choose color by age (coarse)
+        color = (180, 150, 200)
+        indicator_radius = int(min(8, hex_radius * 0.3))
+        cx, cy = hex_center
+        pygame.draw.circle(surface, (0, 0, 0), (int(cx), int(cy)), indicator_radius + 1)
+        pygame.draw.circle(surface, color, (int(cx), int(cy)), indicator_radius)
+
+
+class TechNotification:
+    """Notification popup for technology discoveries."""
+    def __init__(self):
+        self.notifications: List[Dict] = []
+        self.font_header = pygame.font.Font(None, 20)
+        self.font_normal = pygame.font.Font(None, 16)
+        self.notification_duration = 3000  # ms
+
+    def add_tech_discovered(self, civ_name: str, tech_name: str, timestamp: int):
+        self.notifications.append({'type': 'tech_discovered', 'civ': civ_name, 'tech': tech_name,
+                                   'timestamp': timestamp, 'alpha': 255})
+
+    def add_age_advanced(self, civ_name: str, age_name: str, timestamp: int):
+        self.notifications.append({'type': 'age_advanced', 'civ': civ_name, 'age': age_name,
+                                   'timestamp': timestamp, 'alpha': 255})
+
+    def update(self, current_time: int):
+        self.notifications = [
+            n for n in self.notifications if current_time - n['timestamp'] < self.notification_duration
+        ]
+        for n in self.notifications:
+            age = current_time - n['timestamp']
+            if age > self.notification_duration * 0.7:
+                fade_duration = self.notification_duration * 0.3
+                fade_progress = (age - self.notification_duration * 0.7) / max(1, fade_duration)
+                n['alpha'] = int(255 * max(0.0, 1 - fade_progress))
+
+    def draw(self, surface: pygame.Surface, x: int, y: int):
+        y_offset = 0
+        for notif in self.notifications[:5]:
+            width, height = 300, 50
+            s = pygame.Surface((width, height))
+            s.set_alpha(notif['alpha'])
+            if notif['type'] == 'tech_discovered':
+                bg_color = (50, 100, 50)
+                icon_color = (100, 200, 100)
+            else:
+                bg_color = (100, 80, 50)
+                icon_color = (200, 160, 100)
+
+            s.fill(bg_color)
+            pygame.draw.rect(s, icon_color, (0, 0, width, height), 2)
+
+            icon_rect = pygame.Rect(5, 5, 40, 40)
+            pygame.draw.rect(s, icon_color, icon_rect, 2)
+            if notif['type'] == 'tech_discovered':
+                pygame.draw.circle(s, icon_color, (25, 20), 8)
+                pygame.draw.line(s, icon_color, (25, 28), (25, 35), 2)
+                pygame.draw.line(s, icon_color, (20, 35), (30, 35), 2)
+            else:
+                pygame.draw.polygon(s, icon_color,
+                                    [(25, 10), (35, 20), (35, 30), (25, 40), (15, 30), (15, 20)])
+
+            if notif['type'] == 'tech_discovered':
+                header = f"{notif['civ']} discovered"
+                detail = notif['tech']
+            else:
+                header = f"{notif['civ']} entered"
+                detail = notif['age']
+
+            header_text = self.font_normal.render(header, True, (255, 255, 255))
+            detail_text = self.font_header.render(detail, True, (255, 255, 200))
+            s.blit(header_text, (50, 8))
+            s.blit(detail_text, (50, 25))
+            surface.blit(s, (x, y + y_offset))
+            y_offset += height + 5
+
+
+# =============================== Existing GUI =================================
 
 class ViewMode(Enum):
     POLITICAL = "political"
     TERRAIN = "terrain"
     POPULATION = "population"
     RESOURCES = "resources"
+    CULTURE = "culture"
+    RELIGION = "religion"
 
 
 @dataclass
@@ -75,54 +536,181 @@ class Camera:
     x: float = 0.0
     y: float = 0.0
     zoom: float = 1.0
-    min_zoom: float = 0.3
+    min_zoom: float = 0.05
     max_zoom: float = 3.0
 
     def pan(self, dx: float, dy: float):
         self.x += dx / self.zoom
         self.y += dy / self.zoom
-    
-    def zoom_at(self, zoom_delta: float, focus_x: float, focus_y: float):
+
+    def zoom_at(self, zoom_delta: float, focus_x: float, focus_y: float, screen_width: int, screen_height: int):
         old_zoom = self.zoom
-        self.zoom = max(self.min_zoom, min(self.max_zoom, self.zoom * (1 + zoom_delta)))
+        new_zoom = self.zoom * (1 + zoom_delta)
+        self.zoom = max(self.min_zoom, min(self.max_zoom, new_zoom))
         
-        # Adjust position to zoom at focus point
-        scale_change = self.zoom / old_zoom
-        self.x = focus_x - (focus_x - self.x) * scale_change
-        self.y = focus_y - (focus_y - self.y) * scale_change
-    
+        # Only adjust position if zoom actually changed
+        if abs(self.zoom - old_zoom) > 1e-6:
+            # Convert screen focus point to world coordinates using old zoom
+            old_wx = (focus_x - screen_width * 0.5) / old_zoom + self.x
+            old_wy = (focus_y - screen_height * 0.5) / old_zoom + self.y
+            
+            # Adjust camera position so the focus point stays at the same screen position
+            self.x = old_wx - (focus_x - screen_width * 0.5) / self.zoom
+            self.y = old_wy - (focus_y - screen_height * 0.5) / self.zoom
+
     def world_to_screen(self, wx: float, wy: float, screen_width: int, screen_height: int) -> Tuple[int, int]:
-        sx = (wx - self.x) * self.zoom + screen_width // 2
-        sy = (wy - self.y) * self.zoom + screen_height // 2
-        return int(sx), int(sy)
-    
+        sx = (wx - self.x) * self.zoom + screen_width * 0.5
+        sy = (wy - self.y) * self.zoom + screen_height * 0.5
+        return round(sx), round(sy)
+
     def screen_to_world(self, sx: int, sy: int, screen_width: int, screen_height: int) -> Tuple[float, float]:
-        wx = (sx - screen_width // 2) / self.zoom + self.x
-        wy = (sy - screen_height // 2) / self.zoom + self.y
+        wx = (sx - screen_width * 0.5) / self.zoom + self.x
+        wy = (sy - screen_height * 0.5) / self.zoom + self.y
         return wx, wy
 
 
 class HexRenderer:
     """Renders hexagonal map with different view modes (pointy-top in top-down)."""
-    
-    # Color schemes for different biomes
+
     BIOME_COLORS = {
-        0: (34, 139, 34),    # Grass - Forest Green
-        1: (238, 203, 173),  # Coast - Peach
-        2: (139, 137, 137),  # Mountain - Gray
-        3: (0, 119, 190),    # Ocean - Deep Blue
-        4: (238, 203, 173),  # Sand/Desert - Sandy
+        0: (34, 139, 34),    # Grass
+        1: (238, 203, 173),  # Coast
+        2: (139, 137, 137),  # Mountain
+        3: (0, 119, 190),    # Ocean
+        4: (238, 203, 173),  # Desert
     }
-    
+
     def __init__(self, world_state: WorldState, hex_radius: float = 40.0):
         self.world_state = world_state
         self.hex_radius = hex_radius
         self.selected_hex: Optional[Tuple[int, int]] = None
         self.hovered_hex: Optional[Tuple[int, int]] = None
         self.civ_colors = make_palette(10)  # Support up to 10 civs
-
-    
         
+        # Fonts for different zoom levels
+        self.font_large = pygame.font.Font(None, 32)
+        self.font_medium = pygame.font.Font(None, 24)
+        self.font_small = pygame.font.Font(None, 18)
+        self.font_tiny = pygame.font.Font(None, 14)
+
+        self.capital_icon: Optional[pygame.Surface] = self._load_image_first_found([
+            "media/capital.png",
+            "assets/icons/capital.png",
+        ])
+        self._capital_scaled_cache: Dict[int, pygame.Surface] = {}  # key: pixel size
+        
+        # Country label renderer
+        self.country_label_renderer = CountryLabelRenderer() if CountryLabelRenderer else None
+
+
+    def get_font_for_zoom(self, zoom: float) -> pygame.font.Font:
+        """Pick a readable font size based on zoom level."""
+        if zoom >= 1.5:
+            return self.font_large
+        elif zoom >= 1.0:
+            return self.font_medium
+        elif zoom >= 0.5:
+            return self.font_small
+        else:
+            return self.font_tiny
+
+    def render(self, surface: pygame.Surface, camera: "Camera", view_mode: "ViewMode",
+               tech_overlay: Optional["TechMapOverlay"] = None,
+               tech_system: Optional["TechnologySystem"] = None,
+               civs: Optional[List] = None) -> None:
+        """Draw the entire hex map onto `surface`."""
+        surface.fill((10, 10, 30))
+        H, W = self.world_state.height, self.world_state.width
+
+        # PASS 1: hex tiles
+        for r in range(H):
+            for q in range(W):
+                color = self.get_hex_color(q, r, view_mode)
+                outline = None
+                if view_mode == ViewMode.TERRAIN and self.world_state.owner_map[r, q] >= 0:
+                    owner = int(self.world_state.owner_map[r, q])
+                    outline = self.civ_colors[owner % len(self.civ_colors)]
+                self.draw_hex(surface, q, r, color, camera, outline, tech_overlay, tech_system)
+
+        # PASS 2: settlements/labels
+        if civs and camera.zoom > 0.1:
+            self.draw_settlement_overlays(surface, camera, civs)
+            
+        # PASS 3: civilization borders
+        self._draw_civ_borders(surface, camera)
+        
+        # PASS 4: selection and hover highlights
+        self._draw_selection_highlights(surface, camera)
+        
+        # PASS 5: country labels (EU4-style)
+        if civs and self.country_label_renderer:
+            self.country_label_renderer.render_country_labels(
+                surface, self.world_state, civs, camera, self.hex_radius, _evenq_center)
+
+    def draw_settlement_overlays(self, surface: pygame.Surface, camera: "Camera", civs: List) -> None:
+        H, W = self.world_state.height, self.world_state.width
+        font = self.get_font_for_zoom(camera.zoom)
+        drawn_civ_labels: set[int] = set()
+
+        for r in range(H):
+            for q in range(W):
+                owner = int(self.world_state.owner_map[r, q])
+                if owner < 0 or owner >= len(civs):
+                    continue
+
+                population = int(self.world_state.pop_map[r, q])
+                settlement_code = int(self.world_state.settlement_map[r, q])
+                is_capital = (settlement_code == 4)  # Capital is settlement type 4
+                
+                # Show all capitals regardless of population, others need min population
+                if not is_capital and population <= 10:
+                    continue
+
+                cx, cy = _evenq_center(q, r, self.hex_radius)
+                sx, sy = camera.world_to_screen(cx, cy, surface.get_width(), surface.get_height())
+                if not (0 <= sx < surface.get_width() and 0 <= sy < surface.get_height()):
+                    continue
+
+                civ = civs[owner]
+
+                stype = self.get_settlement_type(settlement_code)
+                self.draw_settlement_icon(surface, sx, sy, stype, is_capital, camera.zoom)
+
+                # Only show settlement names when zoomed in (country labels handle civ names)
+                if camera.zoom >= 1.2 and (is_capital or settlement_code >= 2):
+                    # Show settlement type instead of civ name when zoomed in
+                    label = f"{stype.title()}"
+                    if is_capital:
+                        label = f"{civ.name} (Capital)"
+                    elif settlement_code >= 2:  # Towns and cities get names
+                        label = f"{stype.title()}"
+                    
+                    if owner not in drawn_civ_labels:
+                        lx = sx + int(15 * camera.zoom)
+                        ly = sy - int(10 * camera.zoom)
+                        self.draw_text_with_border(surface, label, lx, ly, font)
+                        drawn_civ_labels.add(owner)
+
+
+
+
+    def _load_image_first_found(self, candidate_rel_paths: List[str]) -> Optional[pygame.Surface]:
+        """
+        Try to load an image from several repo-relative paths.
+        Returns a Surface or None if all candidates fail. Safe to call after pygame.init().
+        """
+        import pathlib
+        # Anchor to this file's directory (repo-relative), not the CWD.
+        here = pathlib.Path(__file__).resolve().parent
+        for rel in candidate_rel_paths:
+            p = (here / rel).resolve()
+            if p.exists():
+                try:
+                    return pygame.image.load(str(p)).convert_alpha()
+                except Exception:
+                    pass
+        return None
+
     def get_hex_at_point(self, wx: float, wy: float) -> Optional[Tuple[int, int]]:
         """World -> (q,r) using even-q centers (regular flat-top hexes)."""
         best_q = best_r = None
@@ -130,8 +718,9 @@ class HexRenderer:
         r_hex = self.hex_radius
         pick_r2 = (0.95 * r_hex) ** 2
 
-        for r in range(self.world_state.height):
-            for q in range(self.world_state.width):
+        H, W = self.world_state.height, self.world_state.width
+        for r in range(H):
+            for q in range(W):
                 cx, cy = _evenq_center(q, r, r_hex)
                 d2 = (wx - cx) ** 2 + (wy - cy) ** 2
                 if d2 < best_d2 and d2 <= pick_r2:
@@ -139,20 +728,16 @@ class HexRenderer:
 
         return (best_q, best_r) if best_q is not None else None
 
-    def draw_hex(
-        self,
-        surface: pygame.Surface,
-        q: int,
-        r: int,
-        color: Tuple[int, int, int],
-        camera: Camera,
-        outline_color: Optional[Tuple[int, int, int]] = None,
-    ):
+    def draw_hex(self, surface: pygame.Surface, q: int, r: int,
+                 color: Tuple[int, int, int], camera: "Camera",
+                 outline_color: Optional[Tuple[int, int, int]] = None,
+                 tech_overlay: Optional["TechMapOverlay"] = None,
+                 tech_system: Optional["TechnologySystem"] = None):
         """Draw one flat-top hex at its even-q center."""
         cx, cy = _evenq_center(q, r, self.hex_radius)
 
+        # vertices
         verts = []
-        # flat-top vertices: 0°, 60°, 120°, ...
         for i in range(6):
             ang = math.radians(60 * i)
             vx = cx + self.hex_radius * math.cos(ang)
@@ -160,7 +745,7 @@ class HexRenderer:
             sx, sy = camera.world_to_screen(vx, vy, surface.get_width(), surface.get_height())
             verts.append((sx, sy))
 
-        # (optional) quick cull
+        # simple cull
         if all(
             sx < -50 or sx > surface.get_width() + 50 or
             sy < -50 or sy > surface.get_height() + 50
@@ -169,69 +754,306 @@ class HexRenderer:
             return
 
         pygame.draw.polygon(surface, color, verts)
+        
+        # Draw semi-transparent hex grid borders
+        if camera.zoom > 0.4:
+            pygame.draw.polygon(surface, (60, 60, 60), verts, 1)
+        
+        # Keep basic outlines (selection/hover will be drawn later)
         if outline_color:
             pygame.draw.polygon(surface, outline_color, verts, 2)
-        elif self.selected_hex == (q, r):
-            pygame.draw.polygon(surface, (255, 255, 0), verts, 3)
-        elif self.hovered_hex == (q, r):
-            pygame.draw.polygon(surface, (255, 255, 255), verts, 2)
+
+        # Optional tech overlay dot
+        if tech_overlay is not None:
+            cx_s, cy_s = camera.world_to_screen(cx, cy, surface.get_width(), surface.get_height())
+            owner = self.world_state.owner_map[r, q]
+            if owner >= 0:
+                tech_overlay.draw_hex_overlay(surface, (cx_s, cy_s), self.hex_radius * camera.zoom, owner, tech_system)
+
+    def _hex_vertices_world(self, q: int, r: int) -> List[Tuple[float, float]]:
+        """Get 6 world-space vertices for flat-top hex at (q,r)."""
+        cx, cy = _evenq_center(q, r, self.hex_radius)
+        verts = []
+        for i in range(6):
+            ang = math.radians(60 * i)  # 0°, 60°, 120°, 180°, 240°, 300°
+            vx = cx + self.hex_radius * math.cos(ang)
+            vy = cy + self.hex_radius * math.sin(ang)
+            verts.append((vx, vy))
+        return verts
     
-    def get_hex_color(self, q: int, r: int, view_mode: ViewMode) -> Tuple[int, int, int]:
-        """Get color for hex based on view mode."""
+    def _edge_world_by_dir(self, q: int, r: int, dir_idx: int) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+        """Get world-space edge vertices for direction index.
+        dir_idx: 0=E, 1=NE, 2=NW, 3=W, 4=SW, 5=SE
+        Flat-top hex vertices: 0°=E, 60°=SE, 120°=SW, 180°=W, 240°=NW, 300°=NE
+        """
+        verts = self._hex_vertices_world(q, r)
+        # For flat-top hex: vertex 0 is at 0° (E), going clockwise
+        # Direction to edge vertex pairs (adjacent vertices form edges):
+        edge_map = [
+            (0, 1),  # E:  vertex 0 (0°) to vertex 1 (60°) 
+            (5, 0),  # NE: vertex 5 (300°) to vertex 0 (0°)
+            (4, 5),  # NW: vertex 4 (240°) to vertex 5 (300°)
+            (3, 4),  # W:  vertex 3 (180°) to vertex 4 (240°)
+            (2, 3),  # SW: vertex 2 (120°) to vertex 3 (180°)
+            (1, 2),  # SE: vertex 1 (60°) to vertex 2 (120°)
+        ]
+        v1_idx, v2_idx = edge_map[dir_idx]
+        return (verts[v1_idx], verts[v2_idx])
+    
+    def _to_screen_float(self, camera: "Camera", x: float, y: float, w: int, h: int) -> Tuple[float, float]:
+        """Convert world coordinates to screen coordinates (no rounding)."""
+        # Use camera's world_to_screen logic but without rounding
+        screen_x = (x - camera.x) * camera.zoom + w // 2
+        screen_y = (y - camera.y) * camera.zoom + h // 2
+        return (screen_x, screen_y)
+    
+    def _draw_checker_line(self, surface: pygame.Surface, p1: Tuple[float, float], p2: Tuple[float, float], 
+                          col_a: Tuple[int, int, int], col_b: Tuple[int, int, int], width: int, dash_px: int = 8):
+        """Draw alternating colored dashes along line segment."""
+        x1, y1 = p1
+        x2, y2 = p2
+        length = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+        
+        if length < 1:
+            return
+            
+        num_dashes = max(1, int(length / dash_px))
+        
+        for i in range(num_dashes):
+            t1 = i / num_dashes
+            t2 = (i + 1) / num_dashes
+            
+            sx1 = x1 + t1 * (x2 - x1)
+            sy1 = y1 + t1 * (y2 - y1)
+            sx2 = x1 + t2 * (x2 - x1)
+            sy2 = y1 + t2 * (y2 - y1)
+            
+            color = col_a if i % 2 == 0 else col_b
+            pygame.draw.line(surface, color, (int(sx1), int(sy1)), (int(sx2), int(sy2)), width)
+    
+    def _get_neighbor_even_q(self, q: int, r: int, dir_idx: int) -> Tuple[int, int]:
+        """Get neighbor coordinates for direction index using even-q offset.
+        dir_idx: 0=E, 1=NE, 2=NW, 3=W, 4=SW, 5=SE
+        """
+        if q % 2 == 0:  # Even column
+            offsets = [(0,1), (-1,0), (-1,-1), (0,-1), (1,-1), (1,0)]  # [E, NE, NW, W, SW, SE]
+        else:  # Odd column
+            offsets = [(0,1), (-1,1), (-1,0), (0,-1), (1,0), (1,1)]   # [E, NE, NW, W, SW, SE]
+        
+        dr, dq = offsets[dir_idx]
+        return (q + dq, r + dr)
+    
+    def _draw_civ_borders(self, surface: pygame.Surface, camera: "Camera"):
+        """Draw borders only between hexes with different owners."""
+        h, w = self.world_state.owner_map.shape
+        screen_w, screen_h = surface.get_size()
+        drawn_edges = set()  # Global deduplication across all civs
+        
+        base_width = max(1, int(2 * camera.zoom))
+        checker_width = max(1, int(1.25 * camera.zoom))
+        
+        # Process all owned hexes and draw borders only where owners differ
+        for r in range(h):
+            for q in range(w):
+                owner = self.world_state.owner_map[r, q]
+                if owner < 0:  # Skip unowned hexes
+                    continue
+                    
+                # Check all 6 directions for borders with different owners
+                for dir_idx in range(6):
+                    nq, nr = self._get_neighbor_even_q(q, r, dir_idx)
+                    
+                    # Get neighbor owner (OOB = -1, same as unclaimed)
+                    if 0 <= nr < h and 0 <= nq < w:
+                        neighbor_owner = self.world_state.owner_map[nr, nq]
+                    else:
+                        neighbor_owner = -1  # Out of bounds
+                    
+                    # Only draw border if owners are DIFFERENT
+                    if neighbor_owner != owner:
+                        # Create edge key to prevent double drawing
+                        # Use canonical representation (smaller coordinate first)
+                        if (q, r) <= (nq, nr):
+                            edge_key = ((q, r), (nq, nr))
+                        else:
+                            edge_key = ((nq, nr), (q, r))
+                            
+                        if edge_key in drawn_edges:
+                            continue
+                        drawn_edges.add(edge_key)
+                        
+                        # Draw the border edge
+                        (wx1, wy1), (wx2, wy2) = self._edge_world_by_dir(q, r, dir_idx)
+                        
+                        # Convert to screen space
+                        sx1, sy1 = self._to_screen_float(camera, wx1, wy1, screen_w, screen_h)
+                        sx2, sy2 = self._to_screen_float(camera, wx2, wy2, screen_w, screen_h)
+                        
+                        # Draw black base line
+                        pygame.draw.line(surface, (0, 0, 0), (int(sx1), int(sy1)), (int(sx2), int(sy2)), base_width)
+                        
+                        # If neighbor is another civ (not wilderness), add checkered pattern
+                        if neighbor_owner >= 0:
+                            civ_color = self.civ_colors[owner % len(self.civ_colors)]
+                            neighbor_color = self.civ_colors[neighbor_owner % len(self.civ_colors)]
+                            self._draw_checker_line(surface, (sx1, sy1), (sx2, sy2), civ_color, neighbor_color, checker_width, dash_px=8)
+    
+    def _draw_selection_highlights(self, surface: pygame.Surface, camera: "Camera"):
+        """Draw selection and hover highlights after all borders."""
+        screen_w, screen_h = surface.get_size()
+        
+        # Draw hovered hex highlight
+        if self.hovered_hex:
+            q, r = self.hovered_hex
+            if 0 <= r < self.world_state.height and 0 <= q < self.world_state.width:
+                cx, cy = _evenq_center(q, r, self.hex_radius)
+                verts = []
+                for i in range(6):
+                    ang = math.radians(60 * i)
+                    vx = cx + self.hex_radius * math.cos(ang)
+                    vy = cy + self.hex_radius * math.sin(ang)
+                    sx, sy = camera.world_to_screen(vx, vy, screen_w, screen_h)
+                    verts.append((sx, sy))
+                
+                # Check if on screen
+                if any(0 <= sx <= screen_w and 0 <= sy <= screen_h for sx, sy in verts):
+                    pygame.draw.polygon(surface, (255, 255, 255), verts, 3)
+        
+        # Draw selected hex highlight (on top of hover)
+        if self.selected_hex:
+            q, r = self.selected_hex
+            if 0 <= r < self.world_state.height and 0 <= q < self.world_state.width:
+                cx, cy = _evenq_center(q, r, self.hex_radius)
+                verts = []
+                for i in range(6):
+                    ang = math.radians(60 * i)
+                    vx = cx + self.hex_radius * math.cos(ang)
+                    vy = cy + self.hex_radius * math.sin(ang)
+                    sx, sy = camera.world_to_screen(vx, vy, screen_w, screen_h)
+                    verts.append((sx, sy))
+                
+                # Check if on screen
+                if any(0 <= sx <= screen_w and 0 <= sy <= screen_h for sx, sy in verts):
+                    pygame.draw.polygon(surface, (255, 255, 0), verts, 4)
+
+    def get_hex_color(self, q: int, r: int, view_mode: "ViewMode") -> Tuple[int, int, int]:
         if view_mode == ViewMode.TERRAIN:
             biome = self.world_state.biome_map[r, q]
             return self.BIOME_COLORS.get(biome, (100, 100, 100))
-        
+
         elif view_mode == ViewMode.POLITICAL:
             owner = self.world_state.owner_map[r, q]
+            biome = self.world_state.biome_map[r, q]
+            terrain_color = self.BIOME_COLORS.get(biome, (100, 100, 100))
+            
             if owner >= 0:
-                return self.civ_colors[owner % len(self.civ_colors)]
+                # Blend political color with terrain (70% political, 30% terrain)
+                political_color = self.civ_colors[owner % len(self.civ_colors)]
+                blended = tuple(int(p * 0.7 + t * 0.3) for p, t in zip(political_color, terrain_color))
+                return blended
             else:
-                # Darken terrain color for unowned tiles
-                biome = self.world_state.biome_map[r, q]
-                base_color = self.BIOME_COLORS.get(biome, (100, 100, 100))
-                return tuple(int(c * 0.6) for c in base_color)
-        
+                # Unowned areas show terrain with reduced brightness
+                return tuple(int(c * 0.6) for c in terrain_color)
+
         elif view_mode == ViewMode.POPULATION:
             pop = self.world_state.pop_map[r, q]
             if pop > 0:
-                # Color intensity based on population
                 intensity = min(255, int(pop * 2))
                 return (intensity, intensity // 2, 0)
-            else:
-                return (20, 20, 20)
-        
+            return (20, 20, 20)
+
         elif view_mode == ViewMode.RESOURCES:
             yields = biome_yields(self.world_state.biome_map)
             food = yields["food"][r, q]
-            # Green intensity based on food yield
             intensity = int(min(255, food * 200))
             return (0, intensity, 0)
-        
+
+        elif view_mode == ViewMode.CULTURE:
+            if hasattr(self.world_state, 'culture_map') and self.world_state.culture_map is not None:
+                culture_id = self.world_state.culture_map[r, q]
+                if culture_id >= 0 and culture_id < len(self.cultures):
+                    return self.cultures[culture_id].color
+            return (50, 50, 50)  # Uncultured areas
+
+        elif view_mode == ViewMode.RELIGION:
+            if hasattr(self.world_state, 'religion_map') and self.world_state.religion_map is not None:
+                religion_id = self.world_state.religion_map[r, q]
+                if religion_id >= 0 and religion_id < len(self.religions):
+                    return self.religions[religion_id].color
+            return (30, 30, 30)  # Irreligious areas
+
         return (100, 100, 100)
-    
-    def render(self, surface: pygame.Surface, camera: Camera, view_mode: ViewMode):
-        """Render the entire hex map (pointy-top in top-down)."""
-        # Clear background
-        surface.fill((10, 10, 30))
+
+    def draw_text_with_border(self, surface: pygame.Surface, text: str, x: int, y: int, 
+                              font: pygame.font.Font, text_color=(255, 255, 255), border_color=(0, 0, 0)):
+        """Draw text with a black border for better visibility."""
+        # Draw border by drawing text in multiple positions
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                if dx != 0 or dy != 0:  # Don't draw at center position yet
+                    border_surface = font.render(text, True, border_color)
+                    surface.blit(border_surface, (x + dx, y + dy))
         
-        # Draw hexes
-        for r in range(self.world_state.height):
-            for q in range(self.world_state.width):
-                color = self.get_hex_color(q, r, view_mode)
-                outline = None
-                
-                # Outline owned tiles in terrain view
-                if view_mode == ViewMode.TERRAIN and self.world_state.owner_map[r, q] >= 0:
-                    owner = self.world_state.owner_map[r, q]
-                    outline = self.civ_colors[owner % len(self.civ_colors)]
-                
-                self.draw_hex(surface, q, r, color, camera, outline)
+        # Draw main text
+        text_surface = font.render(text, True, text_color)
+        surface.blit(text_surface, (x, y))
+        return text_surface.get_rect(topleft=(x, y))
+
+    def get_settlement_type(self, settlement_code: int) -> str:
+        """Get settlement type name from settlement map code."""
+        settlement_names = {
+            0: "hamlet",
+            1: "village", 
+            2: "town",
+            3: "city",
+            4: "capital"
+        }
+        return settlement_names.get(settlement_code, "hamlet")
+
+    def draw_settlement_icon(self, surface: pygame.Surface, cx: int, cy: int,
+                             settlement_type: str, is_capital: bool, zoom: float):
+        """Draw settlement icon based on type and capital status (with PNG capital if available)."""
+        icon_size = max(4, int(8 * zoom))
+
+        if is_capital:
+            # If we have a PNG, use it with cached scaling; else fallback to vector star.
+            if self.capital_icon is not None:
+                target_px = icon_size * 2
+                scaled = self._capital_scaled_cache.get(target_px)
+                if scaled is None:
+                    # Cache by exact pixel size to avoid per-frame rescale cost
+                    scaled = pygame.transform.smoothscale(self.capital_icon, (target_px, target_px))
+                    self._capital_scaled_cache[target_px] = scaled
+                surface.blit(scaled, (cx - icon_size, cy - icon_size))
+                return
+            else:
+                # Fallback: draw golden star
+                star_points = []
+                for i in range(10):
+                    angle = i * math.pi / 5
+                    radius = icon_size if i % 2 == 0 else icon_size * 0.5
+                    px = cx + radius * math.cos(angle - math.pi / 2)
+                    py = cy + radius * math.sin(angle - math.pi / 2)
+                    star_points.append((px, py))
+                pygame.draw.polygon(surface, (255, 215, 0), star_points)
+                pygame.draw.polygon(surface, (0, 0, 0), star_points, max(1, int(zoom)))
+                return
+
+        if settlement_type == "city":
+            rect = pygame.Rect(cx - icon_size, cy - icon_size, icon_size * 2, icon_size * 2)
+            pygame.draw.rect(surface, (200, 200, 200), rect)
+            pygame.draw.rect(surface, (0, 0, 0), rect, max(1, int(zoom)))
+        elif settlement_type == "town":
+            pygame.draw.circle(surface, (150, 150, 150), (cx, cy), icon_size)
+            pygame.draw.circle(surface, (0, 0, 0), (cx, cy), icon_size, max(1, int(zoom)))
+        elif settlement_type == "village":
+            points = [(cx, cy - icon_size), (cx - icon_size, cy + icon_size), (cx + icon_size, cy + icon_size)]
+            pygame.draw.polygon(surface, (100, 100, 100), points)
+            pygame.draw.polygon(surface, (0, 0, 0), points, max(1, int(zoom)))
 
 
 class InfoPanel:
     """Right-side information panel for civilization and tile info."""
-    
     def __init__(self, width: int = 300):
         self.width = width
         self.font_title = pygame.font.Font(None, 24)
@@ -240,141 +1062,107 @@ class InfoPanel:
         self.collapsed = False
         self.selected_tile: Optional[Tuple[int, int]] = None
         self.feature_map: Optional[np.ndarray] = None
-        
-    def draw(self, surface: pygame.Surface, world_state: WorldState, civs: List):
-        """Draw the info panel."""
+
+    def draw(self, surface: pygame.Surface, world_state: WorldState, civs: List,
+             tech_system: Optional["TechnologySystem"] = None):
         panel_height = surface.get_height()
         panel_x = surface.get_width() - self.width
-        
-        # Draw panel background
+
+        # Background
         panel_rect = pygame.Rect(panel_x, 0, self.width, panel_height)
         pygame.draw.rect(surface, (30, 30, 40), panel_rect)
         pygame.draw.rect(surface, (60, 60, 80), panel_rect, 2)
-        
-        # Draw collapse button
+
+        # Collapse toggle
         button_rect = pygame.Rect(panel_x + 5, 5, 30, 20)
         pygame.draw.rect(surface, (50, 50, 70), button_rect)
         arrow = "<" if not self.collapsed else ">"
         arrow_text = self.font_small.render(arrow, True, (200, 200, 200))
         surface.blit(arrow_text, (panel_x + 15, 7))
-        
+
         if self.collapsed:
             return
-        
-        # Title
+
         title = self.font_title.render("INFO", True, (255, 255, 255))
         surface.blit(title, (panel_x + 45, 5))
-        
+
         y_offset = 35
-        
-        # World info section
+
+        # WORLD
         self._draw_section_header(surface, "WORLD", panel_x + 10, y_offset)
         y_offset += 25
-        
-        # Date and turn
+
         m, d, y = world_state.get_date_tuple()
-        date_text = f"Date: {m}/{d}/{y}"
-        turn_text = f"Turn: {world_state.turn}"
-        time_text = f"Time Scale: {world_state.time_scale}"
-        
-        self._draw_text(surface, date_text, panel_x + 15, y_offset)
-        y_offset += 20
-        self._draw_text(surface, turn_text, panel_x + 15, y_offset)
-        y_offset += 20
-        self._draw_text(surface, time_text, panel_x + 15, y_offset)
-        y_offset += 30
-        
-        # Population info
+        self._draw_text(surface, f"Date: {m}/{d}/{y}", panel_x + 15, y_offset); y_offset += 20
+        self._draw_text(surface, f"Turn: {world_state.turn}", panel_x + 15, y_offset); y_offset += 20
+        self._draw_text(surface, f"Time Scale: {world_state.time_scale}", panel_x + 15, y_offset); y_offset += 30
+
         total_pop = world_state.pop_map.sum()
         owned_tiles = (world_state.owner_map >= 0).sum()
-        self._draw_section_header(surface, "STATISTICS", panel_x + 10, y_offset)
-        y_offset += 25
-        self._draw_text(surface, f"Total Population: {int(total_pop)}", panel_x + 15, y_offset)
-        y_offset += 20
-        self._draw_text(surface, f"Owned Tiles: {owned_tiles}", panel_x + 15, y_offset)
-        y_offset += 30
-        
-        # Civilizations section
+        self._draw_section_header(surface, "STATISTICS", panel_x + 10, y_offset); y_offset += 25
+        self._draw_text(surface, f"Total Population: {int(total_pop)}", panel_x + 15, y_offset); y_offset += 20
+        self._draw_text(surface, f"Owned Tiles: {owned_tiles}", panel_x + 15, y_offset); y_offset += 30
+
+        # CIVS
         if civs:
-            self._draw_section_header(surface, "CIVILIZATIONS", panel_x + 10, y_offset)
-            y_offset += 25
-            
-            for civ in civs[:5]:  # Show top 5 civs
-                # Calculate civ population
+            self._draw_section_header(surface, "CIVILIZATIONS", panel_x + 10, y_offset); y_offset += 25
+            for civ in civs[:5]:
                 civ_pop = world_state.pop_map[world_state.owner_map == civ.id].sum()
                 civ_tiles = (world_state.owner_map == civ.id).sum()
-                
-                # Draw civ color box
-                color_box = pygame.Rect(panel_x + 15, y_offset, 12, 12)
-                pygame.draw.rect(surface, civ.color, color_box)
-                
-                # Draw civ name and stats
-                civ_text = f"{civ.name}: {int(civ_pop)} pop, {civ_tiles} tiles"
-                self._draw_text(surface, civ_text, panel_x + 32, y_offset, size='small')
+                pygame.draw.rect(surface, civ.color, pygame.Rect(panel_x + 15, y_offset, 12, 12))
+                self._draw_text(surface, f"{civ.name}: {int(civ_pop)} pop, {civ_tiles} tiles",
+                                panel_x + 32, y_offset, size='small')
                 y_offset += 18
-            
             y_offset += 20
-        
-        # Selected tile info
+
+        # TILE
         if self.selected_tile:
             q, r = self.selected_tile
-            self._draw_section_header(surface, f"TILE ({q}, {r})", panel_x + 10, y_offset)
-            y_offset += 25
-            
-            # Biome
+            self._draw_section_header(surface, f"TILE ({q}, {r})", panel_x + 10, y_offset); y_offset += 25
             biome_names = {0: "Grassland", 1: "Coast", 2: "Mountain", 3: "Ocean", 4: "Desert"}
             biome = world_state.biome_map[r, q]
-            biome_name = biome_names.get(biome, "Unknown")
-            self._draw_text(surface, f"Biome: {biome_name}", panel_x + 15, y_offset)
-            y_offset += 20
-            
-            # Terrain feature
+            self._draw_text(surface, f"Biome: {biome_names.get(biome, 'Unknown')}", panel_x + 15, y_offset); y_offset += 20
+
             if self.feature_map is not None:
                 feature = self.feature_map[r, q]
                 feature_name = describe_feature(feature)
                 if feature_name != "None":
-                    self._draw_text(surface, f"Feature: {feature_name}", panel_x + 15, y_offset)
-                    y_offset += 20
-            
-            # Owner
+                    self._draw_text(surface, f"Feature: {feature_name}", panel_x + 15, y_offset); y_offset += 20
+
             owner = world_state.owner_map[r, q]
-            if owner >= 0 and owner < len(civs):
-                self._draw_text(surface, f"Owner: {civs[owner].name}", panel_x + 15, y_offset)
-                y_offset += 20
+            if 0 <= owner < len(civs):
+                self._draw_text(surface, f"Owner: {civs[owner].name}", panel_x + 15, y_offset); y_offset += 20
             else:
-                self._draw_text(surface, "Owner: None", panel_x + 15, y_offset)
-                y_offset += 20
-            
-            # Population
+                self._draw_text(surface, "Owner: None", panel_x + 15, y_offset); y_offset += 20
+
             pop = world_state.pop_map[r, q]
-            self._draw_text(surface, f"Population: {int(pop)}", panel_x + 15, y_offset)
-            y_offset += 20
-            
-            # Resources
+            self._draw_text(surface, f"Population: {int(pop)}", panel_x + 15, y_offset); y_offset += 20
+
             yields = biome_yields(world_state.biome_map)
-            food = yields["food"][r, q]
-            prod = yields["prod"][r, q]
-            self._draw_text(surface, f"Food: {food:.2f}", panel_x + 15, y_offset)
-            y_offset += 20
-            self._draw_text(surface, f"Production: {prod:.2f}", panel_x + 15, y_offset)
-    
+            food = yields["food"][r, q]; prod = yields["prod"][r, q]
+            self._draw_text(surface, f"Food: {food:.2f}", panel_x + 15, y_offset); y_offset += 20
+            self._draw_text(surface, f"Production: {prod:.2f}", panel_x + 15, y_offset); y_offset += 10
+
+            # --- TECH SECTION (only if tech_system present & tile owned) ---
+            if owner >= 0 and tech_system is not None:
+                y_offset = TechInfoPanel.draw_tech_info(
+                    surface, panel_x + 10, y_offset + 10, self.width,
+                    owner, tech_system,
+                    self.font_normal, self.font_normal, self.font_small
+                )
+
     def _draw_section_header(self, surface: pygame.Surface, text: str, x: int, y: int):
-        """Draw a section header."""
         header = self.font_normal.render(text, True, (200, 200, 100))
         surface.blit(header, (x, y))
-        # Draw underline
         pygame.draw.line(surface, (100, 100, 50), (x, y + 20), (x + self.width - 30, y + 20), 1)
-    
-    def _draw_text(self, surface: pygame.Surface, text: str, x: int, y: int, 
+
+    def _draw_text(self, surface: pygame.Surface, text: str, x: int, y: int,
                    color: Tuple[int, int, int] = (180, 180, 180), size: str = 'normal'):
-        """Draw text at position."""
         font = self.font_small if size == 'small' else self.font_normal
-        text_surface = font.render(text, True, color)
-        surface.blit(text_surface, (x, y))
-    
+        surface.blit(font.render(text, True, color), (x, y))
+
     def handle_click(self, mouse_x: int, screen_width: int) -> bool:
-        """Handle click on panel. Returns True if panel was toggled."""
-        if mouse_x > screen_width - self.width and mouse_x < screen_width - self.width + 40:
+        if screen_width - self.width < mouse_x < screen_width - self.width + 40:
             self.collapsed = not self.collapsed
             return True
         return False
@@ -382,56 +1170,43 @@ class InfoPanel:
 
 class ControlPanel:
     """Bottom control panel with game controls."""
-    
     def __init__(self, height: int = 60):
         self.height = height
         self.font = pygame.font.Font(None, 18)
         self.paused = False
-        self.game_speed = 1  # 1, 2, 3 for normal, fast, very fast
+        self.game_speed = 1
         self.view_mode = ViewMode.POLITICAL
-        
-    def draw(self, surface: pygame.Surface):
-        """Draw the control panel."""
+
+    def draw(self, surface: pygame.Surface, world_state=None):
         panel_y = surface.get_height() - self.height
         panel_rect = pygame.Rect(0, panel_y, surface.get_width(), self.height)
-        
-        # Background
         pygame.draw.rect(surface, (30, 30, 40), panel_rect)
         pygame.draw.rect(surface, (60, 60, 80), panel_rect, 2)
-        
+
         x_offset = 10
         y_center = panel_y + self.height // 2
-        
-        # Pause/Play button
+
+        # Pause/Play
         pause_rect = pygame.Rect(x_offset, y_center - 15, 60, 30)
         color = (150, 50, 50) if self.paused else (50, 150, 50)
         pygame.draw.rect(surface, color, pause_rect)
-        pause_text = "PLAY" if self.paused else "PAUSE"
-        text = self.font.render(pause_text, True, (255, 255, 255))
-        text_rect = text.get_rect(center=pause_rect.center)
-        surface.blit(text, text_rect)
+        text = self.font.render("PLAY" if self.paused else "PAUSE", True, (255, 255, 255))
+        surface.blit(text, text.get_rect(center=pause_rect.center))
         x_offset += 70
-        
-        # Speed controls
+
         speed_text = self.font.render(f"Speed: {self.game_speed}x", True, (200, 200, 200))
-        surface.blit(speed_text, (x_offset, y_center - 8))
-        x_offset += 80
-        
-        # Speed buttons
+        surface.blit(speed_text, (x_offset, y_center - 8)); x_offset += 80
+
         for i, speed in enumerate([1, 2, 3]):
             speed_rect = pygame.Rect(x_offset + i * 35, y_center - 15, 30, 30)
             color = (100, 100, 150) if self.game_speed == speed else (50, 50, 70)
             pygame.draw.rect(surface, color, speed_rect)
-            text = self.font.render(str(speed), True, (255, 255, 255))
-            text_rect = text.get_rect(center=speed_rect.center)
-            surface.blit(text, text_rect)
+            txt = self.font.render(str(speed), True, (255, 255, 255))
+            surface.blit(txt, txt.get_rect(center=speed_rect.center))
         x_offset += 120
-        
-        # View mode buttons
+
         mode_text = self.font.render("View:", True, (200, 200, 200))
-        surface.blit(mode_text, (x_offset, y_center - 8))
-        x_offset += 50
-        
+        surface.blit(mode_text, (x_offset, y_center - 8)); x_offset += 50
         for i, (mode, label) in enumerate([
             (ViewMode.POLITICAL, "Political"),
             (ViewMode.TERRAIN, "Terrain"),
@@ -441,85 +1216,114 @@ class ControlPanel:
             mode_rect = pygame.Rect(x_offset + i * 75, y_center - 15, 70, 30)
             color = (100, 100, 150) if self.view_mode == mode else (50, 50, 70)
             pygame.draw.rect(surface, color, mode_rect)
-            text = self.font.render(label, True, (255, 255, 255))
-            text_rect = text.get_rect(center=mode_rect.center)
-            surface.blit(text, text_rect)
-        
-        # Controls help text (right side)
+            txt = self.font.render(label, True, (255, 255, 255))
+            surface.blit(txt, txt.get_rect(center=mode_rect.center))
+        x_offset += 320
+
+        # Time Scale (if world_state provided)
+        if world_state:
+            scale_text = self.font.render("Time:", True, (200, 200, 200))
+            surface.blit(scale_text, (x_offset, y_center - 8)); x_offset += 45
+            for i, (scale, label) in enumerate([
+                ("week", "Week"),
+                ("month", "Month"), 
+                ("year", "Year")
+            ]):
+                scale_rect = pygame.Rect(x_offset + i * 60, y_center - 15, 55, 30)
+                color = (100, 150, 100) if world_state.time_scale == scale else (50, 70, 50)
+                pygame.draw.rect(surface, color, scale_rect)
+                txt = self.font.render(label, True, (255, 255, 255))
+                surface.blit(txt, txt.get_rect(center=scale_rect.center))
+
+        # Help  
         help_texts = [
             "Mouse: Drag to pan, Wheel to zoom, Click to select",
-            "Space: Pause/Play | 1-3: Speed | Q/W/E/R: View modes"
+            "Space: Pause/Play | 1-3: Speed | 4-6: Time Scale | Q/W/E/R: View modes | T: Tech Tree"
         ]
-        for i, help_text in enumerate(help_texts):
-            text = self.font.render(help_text, True, (150, 150, 150))
-            surface.blit(text, (surface.get_width() - 400, panel_y + 10 + i * 20))
-    
-    def handle_click(self, mouse_x: int, mouse_y: int, screen_height: int) -> str:
-        """Handle click on control panel. Returns action name or empty string."""
+        for i, msg in enumerate(help_texts):
+            t = self.font.render(msg, True, (150, 150, 150))
+            surface.blit(t, (surface.get_width() - 480, panel_y + 10 + i * 20))
+
+    def handle_click(self, mouse_x: int, mouse_y: int, screen_height: int, world_state=None) -> str:
         if mouse_y < screen_height - self.height:
             return ""
-        
         y_center = screen_height - self.height // 2
-        
-        # Check pause button
+        # Pause
         if 10 <= mouse_x <= 70 and y_center - 15 <= mouse_y <= y_center + 15:
             self.paused = not self.paused
             return "pause_toggle"
-        
-        # Check speed buttons
+        # Speed
         for i, speed in enumerate([1, 2, 3]):
             x = 160 + i * 35
             if x <= mouse_x <= x + 30 and y_center - 15 <= mouse_y <= y_center + 15:
                 self.game_speed = speed
                 return f"speed_{speed}"
-        
-        # Check view mode buttons
-        for i, mode in enumerate([ViewMode.POLITICAL, ViewMode.TERRAIN, 
-                                 ViewMode.POPULATION, ViewMode.RESOURCES]):
+        # View modes
+        for i, mode in enumerate([ViewMode.POLITICAL, ViewMode.TERRAIN, ViewMode.POPULATION, ViewMode.RESOURCES]):
             x = 330 + i * 75
             if x <= mouse_x <= x + 70 and y_center - 15 <= mouse_y <= y_center + 15:
                 self.view_mode = mode
                 return f"view_{mode.value}"
         
+        # Time Scale (if world_state provided)
+        if world_state:
+            for i, scale in enumerate(["week", "month", "year"]):
+                x = 695 + i * 60  # Offset after view modes + "Time:" label
+                if x <= mouse_x <= x + 55 and y_center - 15 <= mouse_y <= y_center + 15:
+                    world_state.time_scale = scale
+                    return f"time_scale_{scale}"
+                    
         return ""
 
 
 class GodsimGUI:
     """Main GUI application for GodsimPy."""
-    
     def __init__(self, world_state: WorldState = None, world_path: str = None):
         pygame.init()
-        
-        # Setup display
+
+        # Display
         self.screen = pygame.display.set_mode((1280, 720), pygame.RESIZABLE)
         pygame.display.set_caption("GodsimPy - Civilization Simulation")
-        
+
         # Load or create world
         if world_state:
             self.world_state = world_state
         elif world_path and os.path.exists(world_path):
             self.world_state = load_npz(world_path)
         else:
-            # Create a new world
             self.world_state = self._create_new_world()
-        
-        # Generate terrain features
+
+        # Terrain features
         self.feature_map = generate_features(
             self.world_state.biome_map,
             np.random.default_rng(self.world_state.seed + 1000)
         )
-        
-        # Initialize civilizations if needed
+
+        # Generate cultures and religions if not already present
+        from sim.cultures import create_cultures_and_religions
+        if not hasattr(self.world_state, 'culture_map') or self.world_state.culture_map is None:
+            self.cultures, self.religions, culture_map, religion_map = create_cultures_and_religions(
+                self.world_state.height, self.world_state.width, self.world_state.biome_map,
+                num_cultures=8, num_religions=5, seed=self.world_state.seed + 5000
+            )
+            self.world_state.culture_map = culture_map
+            self.world_state.religion_map = religion_map
+        else:
+            # Reconstruct culture/religion objects from existing maps
+            self.cultures, self.religions = self._reconstruct_cultures_religions()
+
+        # Civs
         self.civs = []
         if (self.world_state.owner_map >= 0).sum() == 0:
             self.world_state, self.civs = initialize_civs(
-                self.world_state, 
+                self.world_state,
                 n_civs=5,
                 base_pop=50.0,
-                seed=self.world_state.seed + 2000
+                seed=self.world_state.seed + 2000,
+                cultures=self.cultures,
+                religions=self.religions
             )
         else:
-            # Reconstruct civ list from existing data
             num_civs = self.world_state.owner_map.max() + 1
             if num_civs > 0:
                 colors = make_palette(num_civs)
@@ -531,19 +1335,35 @@ class GodsimGUI:
                         color=colors[i],
                         rng_seed=self.world_state.seed ^ (i * 9973 + 12345)
                     ))
-        
-        # Initialize components
+
+        # Components
         self.camera = Camera()
         self.hex_renderer = HexRenderer(self.world_state)
         self.info_panel = InfoPanel()
         self.info_panel.feature_map = self.feature_map
         self.control_panel = ControlPanel()
-        # View state: start with top-down and allow toggling isometric view
         self.isometric_mode = False
-        
-        # Initialize hex popup if available
-        self.hex_popup = HexPopup() if HexPopup else None
-        
+
+        # --- Tech GUI bits (safe if technology not available) ---
+        self.tech_window = TechTreeWindow()
+        self.tech_info = TechInfoPanel()
+        self.age_indicator = AgeProgressIndicator()
+        self.tech_overlay = TechMapOverlay()
+        self.tech_notifications = TechNotification()
+        # Attach a TechnologySystem if your sim exposes one:
+        # Preferred: engine sets world_state.tech_system
+        self.tech_system: Optional["TechnologySystem"] = getattr(self.world_state, "tech_system", None) if _TECH_AVAILABLE else None
+
+        # Popup (optional)
+        try:
+            from gui.hex_popup import HexPopup
+        except ImportError:
+            try:
+                from hex_popup import HexPopup  # type: ignore[reportMissingImports]
+            except ImportError:
+                HexPopup = None
+        self.hex_popup = HexPopup() if 'HexPopup' in locals() and HexPopup else None
+
         # State
         self.running = True
         self.clock = pygame.time.Clock()
@@ -551,33 +1371,108 @@ class GodsimGUI:
         self.drag_start = (0, 0)
         self.last_update = 0
         self.update_interval = 1000  # ms between simulation updates
-        
+        self.needs_redraw = True  # Track if we need to redraw the screen
+
     def _create_new_world(self) -> WorldState:
-        """Create a new world with default parameters."""
         w, h = 64, 48
         seed = np.random.randint(0, 100000)
-        
         height, _, sea, _ = build_world(
-            w, h, seed, 
+            w, h, seed,
             plate_count=12,
             hex_radius=12.0,
             sea_level_percentile=0.5,
             mountain_h=0.8
         )
         biomes = build_biomes(height, sea, 0.8)
-        
         return from_worldgen(height, biomes, sea, w, h, 12.0, seed)
-    
+
+    def _reconstruct_cultures_religions(self):
+        """Reconstruct culture and religion objects from existing maps."""
+        from sim.cultures import (
+            generate_culture_names, generate_religion_names, generate_religion_symbols, 
+            create_palette
+        )
+        
+        # Find unique culture/religion IDs
+        unique_cultures = set()
+        unique_religions = set()
+        
+        culture_origins = {}
+        religion_origins = {}
+        
+        h, w = self.world_state.culture_map.shape
+        for r in range(h):
+            for c in range(w):
+                culture_id = self.world_state.culture_map[r, c]
+                religion_id = self.world_state.religion_map[r, c]
+                
+                if culture_id >= 0:
+                    unique_cultures.add(culture_id)
+                    if culture_id not in culture_origins:
+                        culture_origins[culture_id] = (r, c)
+                
+                if religion_id >= 0:
+                    unique_religions.add(religion_id)
+                    if religion_id not in religion_origins:
+                        religion_origins[religion_id] = (r, c)
+        
+        # Create culture objects
+        from sim.cultures import Culture, Religion
+        num_cultures = max(unique_cultures) + 1 if unique_cultures else 0
+        num_religions = max(unique_religions) + 1 if unique_religions else 0
+        
+        culture_names = generate_culture_names(num_cultures)
+        culture_colors = create_palette(num_cultures, hue_offset=0.0)
+        cultures = []
+        
+        for i in range(num_cultures):
+            culture = Culture(
+                id=i,
+                name=culture_names[i],
+                color=culture_colors[i],
+                origin=culture_origins.get(i, (0, 0))
+            )
+            cultures.append(culture)
+        
+        # Create religion objects
+        religion_names = generate_religion_names(num_religions)
+        religion_symbols = generate_religion_symbols(num_religions)
+        religion_colors = create_palette(num_religions, hue_offset=0.3)
+        religions = []
+        
+        for i in range(num_religions):
+            religion = Religion(
+                id=i,
+                name=religion_names[i],
+                color=religion_colors[i],
+                symbol=religion_symbols[i],
+                origin=religion_origins.get(i, (0, 0))
+            )
+            religions.append(religion)
+        
+        return cultures, religions
+
+    def _selected_owner_id(self) -> Optional[int]:
+        """Helper: civ id of currently selected tile owner."""
+        if not self.hex_renderer.selected_hex:
+            return None
+        q, r = self.hex_renderer.selected_hex
+        owner = self.world_state.owner_map[r, q]
+        return int(owner) if owner >= 0 else None
+
     def handle_events(self):
-        """Handle pygame events."""
+        events_handled = False
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
-            
+                events_handled = True
+
             elif event.type == pygame.VIDEORESIZE:
                 self.screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
-            
+                events_handled = True
+
             elif event.type == pygame.KEYDOWN:
+                events_handled = True
                 if event.key == pygame.K_SPACE:
                     self.control_panel.paused = not self.control_panel.paused
                 elif event.key == pygame.K_1:
@@ -586,6 +1481,12 @@ class GodsimGUI:
                     self.control_panel.game_speed = 2
                 elif event.key == pygame.K_3:
                     self.control_panel.game_speed = 3
+                elif event.key == pygame.K_4:
+                    self.world_state.time_scale = "week"
+                elif event.key == pygame.K_5:
+                    self.world_state.time_scale = "month"
+                elif event.key == pygame.K_6:
+                    self.world_state.time_scale = "year"
                 elif event.key == pygame.K_q:
                     self.control_panel.view_mode = ViewMode.POLITICAL
                 elif event.key == pygame.K_w:
@@ -595,124 +1496,145 @@ class GodsimGUI:
                 elif event.key == pygame.K_r:
                     self.control_panel.view_mode = ViewMode.RESOURCES
                 elif event.key == pygame.K_TAB:
-                    # Toggle between top-down and isometric views
                     self.isometric_mode = not self.isometric_mode
                 elif event.key == pygame.K_s and pygame.key.get_mods() & pygame.KMOD_CTRL:
-                    # Save world
                     save_npz(self.world_state, "quicksave.npz")
                     print("World saved to quicksave.npz")
-            
+                # --- Tech hotkey: open/close tree for selected civ (if tech available) ---
+                elif _TECH_AVAILABLE and TechHotkeys.handle_keypress(event, self.tech_window, self._selected_owner_id()):
+                    pass
+                # Toggle overlay with 'A' (optional UX)
+                elif _TECH_AVAILABLE and event.key == pygame.K_a:
+                    self.tech_overlay.toggle()
+
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 1:  # Left click
-                    # Check if clicking on hex popup to close it
+                events_handled = True
+                if event.button == 1:
+                    # Tech window close click
+                    if self.tech_window.handle_click(event.pos[0], event.pos[1], self.screen.get_size()):
+                        continue
+                    # Hex popup close
                     if self.hex_popup and self.hex_popup.visible:
                         if self.hex_popup.handle_click(event.pos[0], event.pos[1]):
                             continue
-                    
-                    # Check if clicking on panels
+                    # Panels
                     if self.info_panel.handle_click(event.pos[0], self.screen.get_width()):
                         continue
-                    
-                    action = self.control_panel.handle_click(
-                        event.pos[0], event.pos[1], self.screen.get_height()
-                    )
+                    action = self.control_panel.handle_click(event.pos[0], event.pos[1], self.screen.get_height(), self.world_state)
                     if action:
                         continue
+                    # Select hex / start drag
+                    # Calculate map rendering area (same as in render method)
+                    render_width = self.screen.get_width()
+                    if not self.info_panel.collapsed:
+                        render_width -= self.info_panel.width
+                    render_height = self.screen.get_height() - self.control_panel.height
                     
-                    # Otherwise, start dragging or select hex
-                    if event.pos[1] < self.screen.get_height() - self.control_panel.height:
-                        if event.pos[0] < self.screen.get_width() - (0 if self.info_panel.collapsed else self.info_panel.width):
-                            # Check for double-click to show hex popup
-                            wx, wy = self.camera.screen_to_world(
-                                event.pos[0], event.pos[1],
-                                self.screen.get_width(), self.screen.get_height()
-                            )
-                            hex_pos = self.hex_renderer.get_hex_at_point(wx, wy)
-                            
-                            if hex_pos:
-                                # Single click selects hex
-                                self.hex_renderer.selected_hex = hex_pos
-                                self.info_panel.selected_tile = hex_pos
-                                
-                                # Show hex popup
-                                if self.hex_popup:
-                                    screen_x, screen_y = self.camera.world_to_screen(
-                                        wx, wy, self.screen.get_width(), self.screen.get_height()
-                                    )
-                                    self.hex_popup.show(hex_pos[0], hex_pos[1], screen_x, screen_y)
-                            else:
-                                # Close popup if clicking on empty space
-                                if self.hex_popup:
-                                    self.hex_popup.hide()
-                            
-                            self.mouse_dragging = True
-                            self.drag_start = event.pos
-                
-                elif event.button == 4:  # Mouse wheel up
-                    self.camera.zoom_at(0.1, event.pos[0], event.pos[1])
-                elif event.button == 5:  # Mouse wheel down
-                    self.camera.zoom_at(-0.1, event.pos[0], event.pos[1])
-            
+                    if event.pos[1] < render_height and event.pos[0] < render_width:
+                        # Use map surface dimensions for coordinate conversion
+                        wx, wy = self.camera.screen_to_world(
+                            event.pos[0], event.pos[1],
+                            render_width, render_height
+                        )
+                        hex_pos = self.hex_renderer.get_hex_at_point(wx, wy)
+                        if hex_pos:
+                            self.hex_renderer.selected_hex = hex_pos
+                            self.info_panel.selected_tile = hex_pos
+                            if self.hex_popup:
+                                sx, sy = self.camera.world_to_screen(wx, wy, render_width, render_height)
+                                self.hex_popup.show(hex_pos[0], hex_pos[1], sx, sy)
+                        else:
+                            if self.hex_popup:
+                                self.hex_popup.hide()
+                        self.mouse_dragging = True
+                        self.drag_start = event.pos
+
+                elif event.button == 4:  # wheel up
+                    # Use smaller zoom steps for smoother zooming
+                    # Use map surface dimensions for zoom focus point
+                    render_width = self.screen.get_width()
+                    if not self.info_panel.collapsed:
+                        render_width -= self.info_panel.width
+                    render_height = self.screen.get_height() - self.control_panel.height
+                    
+                    # Only zoom if mouse is over map area
+                    if event.pos[1] < render_height and event.pos[0] < render_width:
+                        self.camera.zoom_at(0.1, event.pos[0], event.pos[1], render_width, render_height)
+                    self.tech_window.handle_scroll(1)
+                elif event.button == 5:  # wheel down
+                    # Use smaller zoom steps for smoother zooming
+                    # Use map surface dimensions for zoom focus point
+                    render_width = self.screen.get_width()
+                    if not self.info_panel.collapsed:
+                        render_width -= self.info_panel.width
+                    render_height = self.screen.get_height() - self.control_panel.height
+                    
+                    # Only zoom if mouse is over map area
+                    if event.pos[1] < render_height and event.pos[0] < render_width:
+                        self.camera.zoom_at(-0.1, event.pos[0], event.pos[1], render_width, render_height)
+                    self.tech_window.handle_scroll(-1)
+
             elif event.type == pygame.MOUSEBUTTONUP:
+                events_handled = True
                 if event.button == 1:
                     self.mouse_dragging = False
-            
+
             elif event.type == pygame.MOUSEMOTION:
+                events_handled = True
                 if self.mouse_dragging:
                     dx = event.pos[0] - self.drag_start[0]
                     dy = event.pos[1] - self.drag_start[1]
                     self.camera.pan(-dx, -dy)
                     self.drag_start = event.pos
                 else:
-                    # Update hover hex
-                    if (event.pos[1] < self.screen.get_height() - self.control_panel.height and
-                        event.pos[0] < self.screen.get_width() - (0 if self.info_panel.collapsed else self.info_panel.width)):
+                    # Calculate map rendering area (same as in render method)
+                    render_width = self.screen.get_width()
+                    if not self.info_panel.collapsed:
+                        render_width -= self.info_panel.width
+                    render_height = self.screen.get_height() - self.control_panel.height
+                    
+                    if (event.pos[1] < render_height and event.pos[0] < render_width):
+                        # Use map surface dimensions for coordinate conversion
                         wx, wy = self.camera.screen_to_world(
                             event.pos[0], event.pos[1],
-                            self.screen.get_width(), self.screen.get_height()
+                            render_width, render_height
                         )
                         self.hex_renderer.hovered_hex = self.hex_renderer.get_hex_at_point(wx, wy)
-    
-    def update(self):
-        """Update simulation state."""
-        # Sync pause state between control panel and world state
-        self.world_state.paused = self.control_panel.paused
         
+        return events_handled
+
+    def update(self):
+        # Sync pause
+        self.world_state.paused = self.control_panel.paused
+
+        simulation_updated = False
         if not self.control_panel.paused:
             current_time = pygame.time.get_ticks()
-            
-            # Adjust update interval based on game speed
-            adjusted_interval = self.update_interval // self.control_panel.game_speed
-            
-            if current_time - self.last_update > adjusted_interval:
-                # Advance simulation
-                advance_turn(
-                    self.world_state,
-                    feature_map=self.feature_map,
-                    steps=1
-                )
+            adjusted = max(1, self.update_interval // max(1, self.control_panel.game_speed))
+            if current_time - self.last_update > adjusted:
+                advance_turn(self.world_state, feature_map=self.feature_map, steps=1)
                 self.last_update = current_time
-        
-        # Update hex popup animation
+                simulation_updated = True
+
+        # Tech notifications (optional): if your engine emits events, push them here.
+        self.tech_notifications.update(pygame.time.get_ticks())
+
         if self.hex_popup:
             self.hex_popup.update()
-    
-    def render(self):
-        """Render the game."""
-        # Clear screen
-        self.screen.fill((10, 10, 30))
         
-        # Calculate render area (accounting for panels)
+        return simulation_updated
+
+    def render(self):
+        self.screen.fill((10, 10, 30))
+
+        # Map area dims
         render_width = self.screen.get_width()
         if not self.info_panel.collapsed:
             render_width -= self.info_panel.width
         render_height = self.screen.get_height() - self.control_panel.height
-        
-        # Create subsurface for map drawing
         map_surface = pygame.Surface((render_width, render_height))
 
         if self.isometric_mode:
-            # Render isometric view using array-based renderer
             img = render_iso(
                 self.world_state.height_map,
                 self.world_state.biome_map,
@@ -723,188 +1645,128 @@ class GodsimGUI:
             iso_surf = pygame.transform.smoothscale(iso_surf, (render_width, render_height))
             map_surface.blit(iso_surf, (0, 0))
         else:
-            # Default top-down view using fixed HexRenderer
-            self.hex_renderer.render(map_surface, self.camera, self.control_panel.view_mode)
+            self.hex_renderer.render(
+                map_surface, self.camera, self.control_panel.view_mode,
+                tech_overlay=self.tech_overlay if _TECH_AVAILABLE else None,
+                tech_system=self.tech_system,
+                civs=self.civs
+            )
 
-        # Blit map surface to screen
         self.screen.blit(map_surface, (0, 0))
-        
-        # Draw panels
-        self.info_panel.draw(self.screen, self.world_state, self.civs)
-        self.control_panel.draw(self.screen)
-        
-        # Draw hex popup if visible
+
+        # Panels
+        self.info_panel.draw(self.screen, self.world_state, self.civs, tech_system=self.tech_system)
+        self.control_panel.draw(self.screen, self.world_state)
+
+        # Hex popup
         if self.hex_popup:
             self.hex_popup.draw(self.screen, self.world_state, self.civs, self.feature_map)
-        
-        # Draw FPS counter
+
+        # Age indicators (top-left column) if tech is available
+        if _TECH_AVAILABLE and self.tech_system is not None and self.civs:
+            y_off = 80
+            for civ in self.civs[:5]:
+                state = getattr(self.tech_system, "civ_states", {}).get(civ.id)
+                if state:
+                    self.age_indicator.draw(self.screen, 10, y_off,
+                                            civ.name,
+                                            getattr(state, "current_age", Age.DISSEMINATION),
+                                            len(getattr(state, "researched_techs", [])))
+                    y_off += 30
+
+        # Tech tree window (centered)
+        if _TECH_AVAILABLE:
+            # Civ name map for window header
+            civ_name_map = {civ.id: civ.name for civ in self.civs}
+            self.tech_window.draw(self.screen, self.tech_system, civ_name_map)
+
+        # Tech notifications (top-right)
+        if _TECH_AVAILABLE:
+            self.tech_notifications.draw(self.screen, self.screen.get_width() - 320, 10)
+
+        # FPS
         fps = int(self.clock.get_fps())
         fps_text = pygame.font.Font(None, 20).render(f"FPS: {fps}", True, (200, 200, 200))
         self.screen.blit(fps_text, (10, 10))
-        
-        # Update display
+
         pygame.display.flip()
-    
+
+    # (Kept for completeness; your array-based top-down renderer)
     def render_topdown_view(self, surface: pygame.Surface, view_mode: ViewMode):
-        """Render top-down view using render_topdown functions."""
-        # Create appropriate color/biome array based on view mode
         H, W = self.world_state.height, self.world_state.width
-        color_array = np.zeros((H, W), dtype=np.int32)
-        
         if view_mode == ViewMode.TERRAIN:
-            # Use biome data directly
             color_array = self.world_state.biome_map.copy()
             img = render_topdown(color_array, self.world_state.hex_radius, scale=1)
-            
         elif view_mode == ViewMode.POLITICAL:
-            # For political mode, we need to create a custom image with proper colors
-            # Create a PIL image directly with political colors
-            from PIL import Image, ImageDraw
-            import math
-            from worldgen.hexgrid import axial_to_world_flat, SQRT3
-            
-            # Calculate canvas bounds
-            xs, ys = [], []
-            for r in range(H):
-                for q in range(W):
-                    x, z = axial_to_world_flat(q, r, self.world_state.hex_radius)
-                    xs.append(x)
-                    ys.append(z)
-            
-            padding = self.world_state.hex_radius * 2
-            min_x, max_x = min(xs) - padding, max(xs) + padding
-            min_y, max_y = min(ys) - padding, max(ys) + padding
-            total_width = max_x - min_x
-            total_height = max_y - min_y
-            
-            img_w = int(total_width)
-            img_h = int(total_height)
-            
-            img = Image.new("RGBA", (img_w, img_h), (16, 18, 24, 255))
-            draw = ImageDraw.Draw(img)
-            
-            # Get civ colors from HexRenderer
-            civ_colors = self.hex_renderer.civ_colors
-            biome_colors = self.hex_renderer.BIOME_COLORS
-            
-            def hex_points_flat(cx, cy, radius):
-                pts = []
-                for i in range(6):
-                    ang = math.radians(60*i)
-                    x = cx + math.cos(ang) * radius
-                    y = cy + math.sin(ang) * radius
-                    pts.append((x, y))
-                return pts
-            
-            # Draw each hex
-            for r in range(H):
-                for q in range(W):
-                    x, z = axial_to_world_flat(q, r, self.world_state.hex_radius)
-                    x -= min_x
-                    y = z - min_y
-                    
-                    pts = hex_points_flat(x, y, self.world_state.hex_radius)
-                    
-                    # Get political color
-                    owner = self.world_state.owner_map[r, q]
-                    if owner >= 0:
-                        color = civ_colors[owner % len(civ_colors)]
-                    else:
-                        # Darken terrain color for unowned tiles
-                        biome = self.world_state.biome_map[r, q]
-                        base_color = biome_colors.get(biome, (100, 100, 100))
-                        color = tuple(int(c * 0.6) for c in base_color)
-                    
-                    draw.polygon(pts, fill=color)
-            
+            img = render_topdown_political(
+                self.world_state.owner_map, self.world_state.biome_map,
+                self.hex_renderer.civ_colors, self.hex_renderer.BIOME_COLORS,
+                self.world_state.hex_radius
+            )
         elif view_mode == ViewMode.POPULATION:
-            # Create population-based array
+            color_array = np.zeros((H, W), dtype=np.int32)
             for r in range(H):
                 for q in range(W):
                     pop = self.world_state.pop_map[r, q]
-                    if pop > 0:
-                        color_array[r, q] = min(3, int(pop / 5))  # Scale population to 0-3
-                    else:
-                        color_array[r, q] = 0
+                    color_array[r, q] = min(3, int(pop / 5)) if pop > 0 else 0
             img = render_topdown(color_array, self.world_state.hex_radius, scale=1)
-            
-        else:  # RESOURCES or fallback
-            # Use height data for resources view
+        else:
             img = render_topdown_height(self.world_state.height_map, self.world_state.hex_radius, scale=1)
-        
-        # Convert PIL image to pygame surface
+
         topdown_surf = pygame.image.fromstring(img.tobytes(), img.size, img.mode)
-        
-        # Scale to fit the surface while maintaining aspect ratio
         surf_w, surf_h = surface.get_size()
         img_w, img_h = img.size
-        
-        # Calculate scale to fit while preserving aspect ratio
-        scale_x = surf_w / img_w
-        scale_y = surf_h / img_h
-        scale = min(scale_x, scale_y)
-        
-        new_w = int(img_w * scale)
-        new_h = int(img_h * scale)
-        
+        scale = min(surf_w / img_w, surf_h / img_h)
+        new_w, new_h = int(img_w * scale), int(img_h * scale)
         topdown_surf = pygame.transform.smoothscale(topdown_surf, (new_w, new_h))
-        
-        # Center the image on the surface
-        x_offset = (surf_w - new_w) // 2
-        y_offset = (surf_h - new_h) // 2
-        
-        # Clear background
-        surface.fill((16, 18, 24))  # Match render background color
-        surface.blit(topdown_surf, (x_offset, y_offset))
-    
+        x_off = (surf_w - new_w) // 2
+        y_off = (surf_h - new_h) // 2
+        surface.fill((16, 18, 24))
+        surface.blit(topdown_surf, (x_off, y_off))
+
     def run(self):
-        """Main game loop."""
         while self.running:
-            self.handle_events()
-            self.update()
-            self.render()
-            self.clock.tick(60)  # Cap at 60 FPS
-        
+            events_handled = self.handle_events()
+            simulation_updated = self.update()
+            
+            # Only render if something changed or we're not paused
+            if self.needs_redraw or not self.control_panel.paused or events_handled or simulation_updated:
+                self.render()
+                self.needs_redraw = False
+            
+            # Reduce FPS when paused to save CPU
+            target_fps = 15 if self.control_panel.paused else 60
+            self.clock.tick(target_fps)
         pygame.quit()
 
 
 def main():
     """Entry point for the GUI application."""
     import argparse
-    
     parser = argparse.ArgumentParser(description="GodsimPy GUI")
     parser.add_argument("--load", type=str, help="Path to world NPZ file to load")
-    parser.add_argument("--width", type=int, default=200, help="World width in hexes")
-    parser.add_argument("--height", type=int, default=120, help="World height in hexes")
+    parser.add_argument("--width", type=int, default=100, help="World width in hexes")
+    parser.add_argument("--height", type=int, default=60, help="World height in hexes")
     parser.add_argument("--seed", type=int, help="Random seed for world generation")
     parser.add_argument("--civs", type=int, default=5, help="Number of civilizations")
-    
     args = parser.parse_args()
-    
+
     world_state = None
-    
     if args.load and os.path.exists(args.load):
         print(f"Loading world from {args.load}")
         world_state = load_npz(args.load)
     else:
-        # Generate new world
         print(f"Generating new world ({args.width}x{args.height})")
         seed = args.seed if args.seed else np.random.randint(0, 100000)
-        
         height, _, sea, _ = build_world(
             args.width, args.height, seed,
-            plate_count=12,
-            hex_radius=12.0,
-            sea_level_percentile=0.5,
-            mountain_h=0.8
+            plate_count=12, hex_radius=12.0,
+            sea_level_percentile=0.5, mountain_h=0.8
         )
         biomes = build_biomes(height, sea, 0.8)
         world_state = from_worldgen(height, biomes, sea, args.width, args.height, 12.0, seed)
-        
-        # Initialize civilizations
         world_state, _ = initialize_civs(world_state, n_civs=args.civs, base_pop=50.0, seed=seed + 1000)
-    
-    # Create and run GUI
+
     gui = GodsimGUI(world_state=world_state)
     gui.run()
 

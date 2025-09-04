@@ -9,7 +9,7 @@ population live in :class:`~sim.state.WorldState` maps.
 """
 
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import colorsys
 import numpy as np
@@ -39,12 +39,21 @@ class Civilization:
     rng_seed:
         Deterministic random seed for this civilization. Only metadata is
         stored here; map state is contained in :class:`WorldState`.
+    capital:
+        Coordinates (r, c) of the civilization's capital city.
+    culture_id:
+        ID of the culture this civilization belongs to.
+    religion_id:
+        ID of the religion this civilization follows.
     """
 
     id: int
     name: str
     color: Tuple[int, int, int]
     rng_seed: int
+    capital: Optional[Tuple[int, int]] = None
+    culture_id: int = -1
+    religion_id: int = -1
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +192,8 @@ def initialize_civs(
     n_civs: int,
     base_pop: float = 40.0,
     seed: int = 0,
+    cultures: Optional[List] = None,
+    religions: Optional[List] = None,
 ) -> Tuple[WorldState, List[Civilization]]:
     """Initialize ``n_civs`` civilizations in ``ws``.
 
@@ -213,13 +224,35 @@ def initialize_civs(
     civs: List[Civilization] = []
     for i, (r, c) in enumerate(positions):
         ws.owner_map[r, c] = np.int32(i)
-        ws.pop_map[r, c] = np.float32(base_pop)
+        # Add base_pop to any existing population (from seeding)
+        current_pop = float(ws.pop_map[r, c])
+        ws.pop_map[r, c] = np.float32(base_pop + current_pop)
+        ws.settlement_map[r, c] = np.uint8(4)  # Mark as capital (4)
+        
+        # Assign culture and religion based on location
+        culture_id = -1
+        religion_id = -1
+        
+        if hasattr(ws, 'culture_map') and ws.culture_map is not None:
+            culture_id = int(ws.culture_map[r, c])
+        
+        if hasattr(ws, 'religion_map') and ws.religion_map is not None:
+            religion_id = int(ws.religion_map[r, c])
+        
         if i < 26:
             name = f"Civ {chr(65 + i)}"
         else:
             name = f"Civ {i}"
         rng_seed = seed ^ (i * 9973 + 12345)
-        civs.append(Civilization(id=i, name=name, color=colors[i], rng_seed=int(rng_seed)))
+        civs.append(Civilization(
+            id=i, 
+            name=name, 
+            color=colors[i], 
+            rng_seed=int(rng_seed), 
+            capital=(r, c),
+            culture_id=culture_id,
+            religion_id=religion_id
+        ))
 
     return ws, civs
 

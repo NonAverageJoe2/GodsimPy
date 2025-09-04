@@ -64,10 +64,7 @@ def render_topdown(world, path_png: str) -> None:
         cx, cz = axial_to_world_flat(t.q, t.r, radius)
         pts = _hex_points(cx, cz, radius)
         pts = [(x - minx, z - miny) for (x, z) in pts]
-        try:
-            b = int(t.biome)
-        except Exception:
-            b = 0
+        b = int(t.biome)
         b = 0 if b < 0 or b >= len(BIOME_COLORS) else b
         draw.polygon(pts, fill=BIOME_COLORS[b])
         if t.owner is not None:
@@ -123,10 +120,7 @@ def render_isometric(
     biome = np.zeros((H, W), dtype=np.int32)
     for t in world.tiles:
         height[t.r, t.q] = float(t.height)
-        try:
-            biome[t.r, t.q] = int(t.biome)
-        except Exception:
-            biome[t.r, t.q] = 0
+        biome[t.r, t.q] = int(t.biome)
 
     R = _rot_x(math.radians(tilt_deg)) @ _rot_y(math.radians(yaw_deg))
 
