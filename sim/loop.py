@@ -256,14 +256,8 @@ def advance_turn(
             if rng.random() > expansion_prob:
                 continue
                 
-            # Get hex neighbors using axial coordinates (convert from array indices)
-            # Array uses (row, col) but hex logic uses axial (q, r)
-            current_q, current_r = x, y  # Convert array indices to axial coordinates
-            
-            # Get axial neighbors and convert back to array indices
-            from worldgen.hexgrid import neighbors6
-            neigh_axial = neighbors6(current_q, current_r)
-            neigh = [(nr, nq) for nq, nr in neigh_axial if 0 <= nq < w and 0 <= nr < h]
+            # Get neighboring tiles using even-q offset coordinates directly
+            neigh = get_evenq_hex_neighbors(y, x, h, w)
             
             # Only consider empty land tiles (not ocean or already owned)
             # Mountains are now colonizable but with penalties
@@ -289,14 +283,12 @@ def advance_turn(
                 ny, nx = best_choices[rng.integers(len(best_choices))]
             
             # Double-check that the selected tile is actually adjacent (safety check)
-            # Convert array indices to axial coordinates for proper neighbor checking
-            source_q, source_r = x, y  # Convert array indices to axial coordinates
-            target_q, target_r = nx, ny
-            
-            # Verify the target is in our neighbor list using axial coordinates
-            from worldgen.hexgrid import neighbors6
-            valid_neighbors_axial = neighbors6(source_q, source_r)
-            if (target_q, target_r) not in valid_neighbors_axial:
+            source_r, source_q = y, x
+            target_r, target_q = ny, nx
+
+            # Verify the target is in our neighbor list using even-q neighbors
+            valid_neighbors = get_evenq_hex_neighbors(source_r, source_q, h, w)
+            if (target_r, target_q) not in valid_neighbors:
                 continue  # Skip this expansion if somehow not adjacent
             
             # Double-check that target tile is colonizable (not ocean)
@@ -314,7 +306,7 @@ def advance_turn(
                 mountain_cost_multiplier = 2.0  # Costs 2x as many settlers
                 mountain_pop_penalty = 0.5  # Settlers only establish 50% population
                 actual_settler_cost = settler_cost * mountain_cost_multiplier
-                initial_mountain_pop = (settler_cost + 5) * mountain_pop_penalty
+                initial_mountain_pop = settler_cost * mountain_pop_penalty
                 
                 # Check if source has enough population for mountain colonization
                 if pop[y, x] >= actual_settler_cost:
@@ -325,7 +317,7 @@ def advance_turn(
                     continue
             else:
                 # Normal colonization
-                pop[ny, nx] = np.float32(settler_cost + 5 + existing_pop)
+                pop[ny, nx] = np.float32(settler_cost + existing_pop)
                 pop[y, x] = np.float32(max(0.0, pop[y, x] - settler_cost))
             # New settlements start as hamlets, but check if they can be settlements at all
             # Most expanded territories should remain pure hamlets for realistic spacing
