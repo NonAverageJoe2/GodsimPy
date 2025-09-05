@@ -57,13 +57,16 @@ class Age(Enum):
         """Resources required to enter this age."""
         requirements = {
             Age.DISSEMINATION: set(),
-            Age.COPPER: {"copper"},
-            Age.BRONZE: {"copper", "tin"},
-            Age.IRON: {"iron"},
-            Age.CLASSICAL: {"iron"},
-            Age.MEDIEVAL: {"iron"},
-            Age.RENAISSANCE: {"iron"},
-            Age.INDUSTRIAL: {"iron", "coal"},
+            # Metal requirements are now handled through the trade goods system
+            # rather than the old resource mechanic, so the early ages no longer
+            # gate on specific metals.
+            Age.COPPER: set(),
+            Age.BRONZE: set(),
+            Age.IRON: set(),
+            Age.CLASSICAL: set(),
+            Age.MEDIEVAL: set(),
+            Age.RENAISSANCE: set(),
+            Age.INDUSTRIAL: {"coal"},
         }
         return requirements.get(self, set())
     
@@ -204,7 +207,8 @@ class TechTree:
             research_cost=20,
             prerequisites=["stone_tools"],
             required_age=Age.COPPER,
-            required_resources={"copper"},
+            # Resource requirements have been removed in favour of trade goods
+            required_resources=set(),
             bonuses=TechBonus(production_multiplier=1.3, military_strength=5.0)
         ))
         
@@ -238,7 +242,7 @@ class TechTree:
             research_cost=35,
             prerequisites=["copper_working"],
             required_age=Age.BRONZE,
-            required_resources={"copper", "tin"},
+            required_resources=set(),
             bonuses=TechBonus(production_multiplier=1.4, military_strength=10.0)
         ))
         
@@ -273,7 +277,7 @@ class TechTree:
             research_cost=50,
             prerequisites=["bronze_working"],
             required_age=Age.IRON,
-            required_resources={"iron"},
+            required_resources=set(),
             bonuses=TechBonus(production_multiplier=1.5, military_strength=20.0)
         ))
         
@@ -524,28 +528,12 @@ def calculate_civ_science_output(civ, world) -> float:
 
 def detect_resources_in_territory(civ, world, feature_map=None) -> Set[str]:
     """Detect what resources a civilization has access to."""
-    resources = set()
-    
-    for (q, r) in civ.tiles:
-        tile = world.get_tile(q, r)
-        
-        # Check for basic resources based on biome/features
-        # This is a simplified version - you can expand based on your feature system
-        if tile.biome == "mountain":
-            resources.add("iron")
-            resources.add("copper")
-        
-        if feature_map is not None:
-            # Add resource detection based on features
-            # You would expand this based on your feature types
-            pass
-    
-    # For now, give copper and tin more readily for testing
-    if len(civ.tiles) > 3:
-        resources.add("copper")
-    if len(civ.tiles) > 5:
-        resources.add("tin")
-    if len(civ.tiles) > 10:
-        resources.add("iron")
-    
+    # The previous implementation exposed copper, tin and iron as discrete
+    # resources.  The economy now uses the trade goods system instead, so this
+    # detector currently returns an empty set.  Hooks remain for future
+    # expansion if other non-trade resources are introduced.
+    resources: Set[str] = set()
+    if feature_map is not None:
+        # Placeholder for more detailed detection based on map features
+        pass
     return resources
