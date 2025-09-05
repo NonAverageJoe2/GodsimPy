@@ -543,5 +543,5 @@ def detect_resources_in_territory(civ, world, feature_map=None) -> Set[str]:
     if feature_map is not None:
         # Placeholder for more detailed detection based on map features
         pass
-
+      
     return resources

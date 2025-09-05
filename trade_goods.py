@@ -9,7 +9,6 @@ from typing import Dict, List, Tuple, Optional
 
 class TradeGood(Enum):
     """Enumeration of available trade goods.
-
     The list distinguishes between raw ores and their processed counterparts so
     that technology requirements can track where minerals are mined and how
     they are refined.  ``*_ORE`` entries represent the raw material while the
@@ -26,7 +25,6 @@ class TradeGood(Enum):
     IRON_ORE = auto()
     COAL = auto()
     COPPER = auto()
-    IRON = auto()
     BRONZE = auto()
     TOOLS = auto()
     WEAPONS = auto()
