@@ -14,10 +14,19 @@ from worldgen.hexgrid import axial_to_pixel, hex_polygon, pixel_to_axial
 
 # Biome colors roughly matching ``render.py``
 BIOME_COLORS = [
-    (int(0.20 * 255), int(0.70 * 255), int(0.20 * 255)),  # grass/land
-    (int(0.95 * 255), int(0.85 * 255), int(0.25 * 255)),  # sand/coast
-    (int(0.60 * 255), int(0.60 * 255), int(0.60 * 255)),  # mountain
-    (int(0.05 * 255), int(0.15 * 255), int(0.45 * 255)),  # ocean
+    (34, 139, 34),      # GRASS
+    (238, 203, 173),    # COAST
+    (139, 137, 137),    # MOUNTAIN
+    (0, 119, 190),      # OCEAN
+    (238, 203, 120),    # DESERT
+    (176, 224, 230),    # TUNDRA
+    (240, 248, 255),    # GLACIER
+    (107, 142, 35),     # MARSH
+    (189, 183, 107),    # STEPPE
+    (244, 164, 96),     # SAVANNA
+    (34, 100, 34),      # TAIGA
+    (34, 120, 34),      # TEMPERATE_FOREST
+    (0, 100, 0),        # TROPICAL_FOREST
 ]
 
 # Ownership tint colors

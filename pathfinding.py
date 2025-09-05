@@ -3,6 +3,7 @@ from typing import Dict, List, Tuple
 
 from worldgen.biomes import Biome
 from worldgen.hexgrid import distance
+from sim.biome_mechanics import get_movement_cost
 
 Coord = Tuple[int, int]
 
@@ -16,14 +17,17 @@ def _biome_name(tile) -> str:
     return str(b).lower()
 
 
-def terrain_cost(world, q: int, r: int) -> int:
+def terrain_cost(world, q: int, r: int) -> float:
     t = world.get_tile(q, r)
-    biome = _biome_name(t)
-    if biome == "ocean":
-        return 50
-    if biome == "mountain":
-        return 5
-    return 1
+    biome = t.biome
+    if isinstance(biome, Biome):
+        biome_id = int(biome)
+    else:
+        try:
+            biome_id = int(Biome[str(biome).upper()])
+        except Exception:
+            biome_id = int(Biome.GRASS)
+    return get_movement_cost(biome_id)
 
 
 def reconstruct(came_from: Dict[Coord, Coord], current: Coord) -> List[Coord]:

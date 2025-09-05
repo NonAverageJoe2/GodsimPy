@@ -20,7 +20,7 @@ import numpy as np
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, ROOT)
 
-from worldgen import build_world, build_biomes, OCEAN, MOUNTAIN
+from worldgen import build_world, OCEAN, MOUNTAIN
 from sim.state import WorldState, from_worldgen, save_npz, load_npz
 from sim.loop import advance_turn
 
@@ -151,8 +151,9 @@ def main(argv: Iterable[str] | None = None) -> int:
             print("--seed is required when generating", file=sys.stderr)
             return 2
         w, h = args.generate
-        height, _plate, sea, _ = build_world(w, h, args.seed, 12, 12.0)
-        biomes = build_biomes(height, sea, 0.80)
+        height, biomes, sea, _ = build_world(
+            w, h, args.seed, 12, 12.0, use_advanced_biomes=True
+        )
         ws = from_worldgen(height, biomes, sea, w, h, 12.0, args.seed)
         initialize_civs(ws, args.civs, args.seed)
     else:

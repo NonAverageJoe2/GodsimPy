@@ -56,7 +56,7 @@ from sim.state import WorldState, load_npz, save_npz
 from sim.resources import biome_yields
 from sim.terrain import generate_features, describe_feature
 from sim.civilization import initialize_civs, make_palette
-from worldgen import build_world, build_biomes
+from worldgen import build_world
 from sim.state import from_worldgen
 from render import render_topdown, render_iso
 from render.render_topdown import render_topdown_height, render_topdown_political
@@ -759,11 +759,19 @@ class HexRenderer:
     """Renders hexagonal map with different view modes (pointy-top in top-down)."""
 
     BIOME_COLORS = {
-        0: (34, 139, 34),    # Grass
-        1: (238, 203, 173),  # Coast
-        2: (139, 137, 137),  # Mountain
-        3: (0, 119, 190),    # Ocean
-        4: (238, 203, 173),  # Desert
+        0: (34, 139, 34),      # GRASS - green
+        1: (238, 203, 173),    # COAST - sandy
+        2: (139, 137, 137),    # MOUNTAIN - gray
+        3: (0, 119, 190),      # OCEAN - blue
+        4: (238, 203, 120),    # DESERT - yellow-sand
+        5: (176, 224, 230),    # TUNDRA - pale blue-green
+        6: (240, 248, 255),    # GLACIER - almost white
+        7: (107, 142, 35),     # MARSH - olive green
+        8: (189, 183, 107),    # STEPPE - khaki
+        9: (244, 164, 96),     # SAVANNA - sandy brown
+        10: (34, 100, 34),     # TAIGA - dark green
+        11: (34, 120, 34),     # TEMPERATE_FOREST - medium green
+        12: (0, 100, 0),       # TROPICAL_FOREST - deep green
     }
 
     def __init__(self, world_state: WorldState, hex_radius: float = 40.0):
@@ -1762,14 +1770,14 @@ class GodsimGUI:
     def _create_new_world(self) -> WorldState:
         w, h = 64, 48
         seed = np.random.randint(0, 100000)
-        height, _, sea, _ = build_world(
+        height, biomes, sea, _ = build_world(
             w, h, seed,
             plate_count=12,
             hex_radius=12.0,
             sea_level_percentile=0.5,
-            mountain_h=0.8
+            mountain_h=0.8,
+            use_advanced_biomes=True,
         )
-        biomes = build_biomes(height, sea, 0.8)
         return from_worldgen(height, biomes, sea, w, h, 12.0, seed)
 
     def _engine_from_state(self, ws: WorldState) -> SimulationEngine:
@@ -2326,12 +2334,12 @@ def main():
     else:
         print(f"Generating new world ({args.width}x{args.height})")
         seed = args.seed if args.seed else np.random.randint(0, 100000)
-        height, _, sea, _ = build_world(
+        height, biomes, sea, _ = build_world(
             args.width, args.height, seed,
             plate_count=12, hex_radius=12.0,
-            sea_level_percentile=0.5, mountain_h=0.8
+            sea_level_percentile=0.5, mountain_h=0.8,
+            use_advanced_biomes=True,
         )
-        biomes = build_biomes(height, sea, 0.8)
         world_state = from_worldgen(height, biomes, sea, args.width, args.height, 12.0, seed)
         # Don't initialize civs here - let GodsimGUI do it properly with cultures
 

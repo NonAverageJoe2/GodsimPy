@@ -22,11 +22,19 @@ from .terrain import (
 
 # Default biome yield values (food, production) in float32
 DEFAULT_YIELDS: Dict[int, tuple[np.float32, np.float32]] = {
-    0: (np.float32(1.0), np.float32(0.6)),  # grass
-    1: (np.float32(0.6), np.float32(0.3)),  # coast
-    2: (np.float32(0.2), np.float32(1.2)),  # mountain
-    3: (np.float32(0.2), np.float32(0.1)),  # ocean
-    4: (np.float32(0.4), np.float32(0.2)),  # sand
+    0: (np.float32(1.0), np.float32(0.6)),   # GRASS - balanced
+    1: (np.float32(0.8), np.float32(0.4)),   # COAST - good food from fishing
+    2: (np.float32(0.1), np.float32(1.2)),   # MOUNTAIN - minerals
+    3: (np.float32(0.3), np.float32(0.1)),   # OCEAN - some fishing
+    4: (np.float32(0.2), np.float32(0.3)),   # DESERT - poor yields
+    5: (np.float32(0.3), np.float32(0.4)),   # TUNDRA - limited resources
+    6: (np.float32(0.0), np.float32(0.2)),   # GLACIER - uninhabitable
+    7: (np.float32(0.9), np.float32(0.3)),   # MARSH - rich soil but hard to work
+    8: (np.float32(0.6), np.float32(0.5)),   # STEPPE - good for herding
+    9: (np.float32(0.7), np.float32(0.5)),   # SAVANNA - decent yields
+    10: (np.float32(0.5), np.float32(0.8)),  # TAIGA - timber production
+    11: (np.float32(0.7), np.float32(0.9)),  # TEMPERATE_FOREST - good all around
+    12: (np.float32(0.8), np.float32(0.7)),  # TROPICAL_FOREST - abundant life
 }
 
 # Fallback for unknown biomes
