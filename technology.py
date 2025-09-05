@@ -108,6 +108,8 @@ class Technology:
     bonuses: TechBonus = field(default_factory=TechBonus)
     unlocks_units: List[str] = field(default_factory=list)
     unlocks_buildings: List[str] = field(default_factory=list)
+    # Generic unlock flags (used for society choice in the tests)
+    unlocks: Dict[str, bool] = field(default_factory=dict)
     
     def can_research(self, 
                      researched: Set[str], 
@@ -159,6 +161,18 @@ class TechTree:
             research_cost=12,
             required_age=Age.DISSEMINATION,
             bonuses=TechBonus(food_multiplier=1.2, production_multiplier=1.1)
+        ))
+
+        # Proto-Governance unlocks society choice
+        self.add_technology(Technology(
+            tech_id="proto_governance",
+            name="Proto-Governance",
+            category=TechCategory.CULTURE,
+            description="Early forms of societal organisation",
+            research_cost=20,
+            prerequisites=["agriculture", "animal_husbandry"],
+            required_age=Age.DISSEMINATION,
+            unlocks={"society_choice": True},
         ))
         
         self.add_technology(Technology(
@@ -396,12 +410,17 @@ class TechnologySystem:
         self.tech_tree = TechTree()
         self.civ_states: Dict[int, CivTechState] = {}
     
-    def initialize_civ(self, civ_id: int, starting_resources: Set[str] = None):
-        """Initialize technology state for a new civilization."""
-        self.civ_states[civ_id] = CivTechState(
+    def initialize_civ(self, civ_id: int, starting_resources: Set[str] = None) -> CivTechState:
+        """Initialize technology state for a new civilization.
+
+        Returns the created :class:`CivTechState` for convenience.
+        """
+        state = CivTechState(
             civ_id=civ_id,
             available_resources=starting_resources or set()
         )
+        self.civ_states[civ_id] = state
+        return state
     
     def update_civ_resources(self, civ_id: int, resources: Set[str]):
         """Update available resources for a civilization."""
