@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Simple trade goods system with support for tin."""
+"""Simple trade goods system with support for metal ores and refined goods."""
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -9,11 +9,10 @@ from typing import Dict, List, Tuple, Optional
 
 class TradeGood(Enum):
     """Enumeration of available trade goods.
-
-    This is not an exhaustive list of every good that might exist in a full
-    implementation, but it covers the ones used by the example and keeps the
-    system easily extensible.  ``TIN`` has been added so that bronze production
-    can depend on both copper and tin.
+    The list distinguishes between raw ores and their processed counterparts so
+    that technology requirements can track where minerals are mined and how
+    they are refined.  ``*_ORE`` entries represent the raw material while the
+    plain names represent ingots or worked metal.
     """
 
     GRAIN = auto()
@@ -21,9 +20,11 @@ class TradeGood(Enum):
     WOOD = auto()
     WOOL = auto()
     STONE = auto()
+    COPPER_ORE = auto()
+    TIN_ORE = auto()
+    IRON_ORE = auto()
+    COAL = auto()
     COPPER = auto()
-    TIN = auto()
-    IRON = auto()
     BRONZE = auto()
     TOOLS = auto()
     WEAPONS = auto()
@@ -45,8 +46,11 @@ GOOD_COLOURS: Dict[TradeGood, Tuple[int, int, int]] = {
     TradeGood.WOOD: (92, 64, 51),
     TradeGood.WOOL: (200, 200, 200),
     TradeGood.STONE: (130, 130, 130),
+    TradeGood.COPPER_ORE: (130, 80, 40),
+    TradeGood.TIN_ORE: (180, 180, 180),
+    TradeGood.IRON_ORE: (60, 60, 60),
+    TradeGood.COAL: (30, 30, 30),
     TradeGood.COPPER: (184, 115, 51),
-    TradeGood.TIN: (180, 180, 180),
     TradeGood.IRON: (80, 80, 80),
     TradeGood.BRONZE: (140, 120, 70),
     TradeGood.TOOLS: (120, 120, 150),
@@ -104,7 +108,13 @@ class TradeGoodsManager:
         mapping = {
             "grass": [TradeGood.GRAIN, TradeGood.CATTLE, TradeGood.WOOL],
             "forest": [TradeGood.WOOD, TradeGood.FURS if hasattr(TradeGood, 'FURS') else TradeGood.WOOL],
-            "mountain": [TradeGood.STONE, TradeGood.COPPER, TradeGood.TIN, TradeGood.IRON],
+            "mountain": [
+                TradeGood.STONE,
+                TradeGood.COPPER_ORE,
+                TradeGood.TIN_ORE,
+                TradeGood.IRON_ORE,
+                TradeGood.COAL,
+            ],
             "desert": [TradeGood.SPICES, TradeGood.INCENSE],
             "coast": [TradeGood.FISH if hasattr(TradeGood, 'FISH') else TradeGood.GRAIN],
             "ocean": [TradeGood.FISH if hasattr(TradeGood, 'FISH') else TradeGood.GRAIN],

@@ -57,9 +57,8 @@ class Age(Enum):
         """Resources required to enter this age."""
         requirements = {
             Age.DISSEMINATION: set(),
-            # Metal requirements are now handled through the trade goods system
-            # rather than the old resource mechanic, so the early ages no longer
-            # gate on specific metals.
+            # Earlier ages no longer require specific metal ores; only coal is
+            # needed for the Industrial Age.
             Age.COPPER: set(),
             Age.BRONZE: set(),
             Age.IRON: set(),
@@ -207,8 +206,6 @@ class TechTree:
             research_cost=20,
             prerequisites=["stone_tools"],
             required_age=Age.COPPER,
-            # Resource requirements have been removed in favour of trade goods
-            required_resources=set(),
             bonuses=TechBonus(production_multiplier=1.3, military_strength=5.0)
         ))
         
@@ -242,7 +239,6 @@ class TechTree:
             research_cost=35,
             prerequisites=["copper_working"],
             required_age=Age.BRONZE,
-            required_resources=set(),
             bonuses=TechBonus(production_multiplier=1.4, military_strength=10.0)
         ))
         
@@ -277,7 +273,6 @@ class TechTree:
             research_cost=50,
             prerequisites=["bronze_working"],
             required_age=Age.IRON,
-            required_resources=set(),
             bonuses=TechBonus(production_multiplier=1.5, military_strength=20.0)
         ))
         
@@ -527,13 +522,26 @@ def calculate_civ_science_output(civ, world) -> float:
 
 
 def detect_resources_in_territory(civ, world, feature_map=None) -> Set[str]:
-    """Detect what resources a civilization has access to."""
-    # The previous implementation exposed copper, tin and iron as discrete
-    # resources.  The economy now uses the trade goods system instead, so this
-    # detector currently returns an empty set.  Hooks remain for future
-    # expansion if other non-trade resources are introduced.
+    """Detect what resources a civilization has access to.
+
+    The detection integrates with the ``TradeGoodsManager`` attached to the
+    world and returns the names of any trade goods actively produced within the
+    civilization's territory.  These names are lower-cased to match technology
+    resource requirements (e.g. ``"coal"`` for the Industrial Age).
+    """
+
     resources: Set[str] = set()
+    trade_mgr = getattr(world, "trade_manager", None)
+    if trade_mgr is not None:
+        for q, r in civ.tiles:
+            tg = trade_mgr.tile_goods.get((q, r))
+            if not tg:
+                continue
+            for good in tg.active_goods.keys():
+                resources.add(good.name.lower())
+
     if feature_map is not None:
         # Placeholder for more detailed detection based on map features
         pass
+      
     return resources

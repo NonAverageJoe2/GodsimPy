@@ -189,8 +189,16 @@ class EnhancedGameEngine:
         """Get the economic value of a trade good"""
         luxury = [TradeGood.WINE, TradeGood.SILK, TradeGood.JEWELRY,
                   TradeGood.SPICES, TradeGood.INCENSE]
-        processed = [TradeGood.TOOLS, TradeGood.WEAPONS, TradeGood.CLOTH,
-                     TradeGood.POTTERY, TradeGood.FURNITURE, TradeGood.BRONZE]
+        processed = [
+            TradeGood.TOOLS,
+            TradeGood.WEAPONS,
+            TradeGood.CLOTH,
+            TradeGood.POTTERY,
+            TradeGood.FURNITURE,
+            TradeGood.COPPER,
+            TradeGood.IRON,
+            TradeGood.BRONZE,
+        ]
 
         if good in luxury:
             return 5.0
