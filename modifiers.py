@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from society import DEFAULT_SOCIETY
+
 
 @dataclass
 class GameModifiers:
@@ -28,4 +30,8 @@ class GameModifiers:
 
 # Global modifiers instance used throughout the codebase
 MODIFIERS = GameModifiers()
+
+# Expose society defaults through this module so other parts of the codebase
+# can access them without importing :mod:`society` directly.
+SOCIETY_DEFAULTS = DEFAULT_SOCIETY
 

@@ -8,7 +8,7 @@ state. Only lightweight metadata is stored here; tile ownership and
 population live in :class:`~sim.state.WorldState` maps.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
 
 import colorsys
@@ -17,6 +17,7 @@ from numpy.typing import NDArray
 
 from sim.state import WorldState
 from sim.resources import biome_yields
+from society import SocietyType, DEFAULT_SOCIETY, SocietyModifiers
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +55,42 @@ class Civilization:
     capital: Optional[Tuple[int, int]] = None
     culture_id: int = -1
     religion_id: int = -1
+    society_type: SocietyType = SocietyType.HUNTER_GATHERER
+    _society_mods: SocietyModifiers = field(init=False)
+
+    def __post_init__(self) -> None:
+        # Bind modifiers according to the initial society type
+        self._society_mods = DEFAULT_SOCIETY[self.society_type]
+
+    def set_society(self, st: SocietyType) -> None:
+        """Apply a new society type to this civilization."""
+
+        self.society_type = st
+        self._society_mods = DEFAULT_SOCIETY[st]
+
+    # ------------------------------------------------------------------
+    # Persistence helpers
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Serialize civilization metadata to a plain dictionary."""
+
+        data = self.__dict__.copy()
+        data["society_type"] = self.society_type.name
+        data.pop("_society_mods", None)
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Civilization":
+        """Deserialize from :meth:`to_dict` output."""
+
+        st_name = data.pop("society_type", "HUNTER_GATHERER")
+        civ = cls(**data)
+        try:
+            civ.set_society(SocietyType[st_name])
+        except KeyError:
+            civ.set_society(SocietyType.HUNTER_GATHERER)
+        return civ
 
 
 # ---------------------------------------------------------------------------
