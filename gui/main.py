@@ -33,24 +33,35 @@ class GameGUI:
 
     def __init__(self, show_overlay: bool = True) -> None:
         pygame.init()
+        # --- Rendering setup ---
         self.clock = pygame.time.Clock()
+        self.fps = 30
+        self.SIM_EVENT = pygame.USEREVENT + 1
+
+        # Simulation engine
         self.eng = SimulationEngine(width=48, height=32, seed=1)
         try:
             apply_all_fixes(self.eng)
         except Exception:
             pass
+
         self.hex_px = 24
         self.zoom = 1.0
         self.camera_x = 0.0
         self.camera_y = 0.0
         self.view_mode = "topdown"
         self.iso_scale = 1.0
-        self.screen = pygame.display.set_mode((1280, 800))
+
+        # Use hardware accelerated flags when available
+        flags = pygame.HWSURFACE | pygame.DOUBLEBUF
+        self.screen = pygame.display.set_mode((1280, 800), flags)
         pygame.display.set_caption("Sim GUI")
+
         self.font = pygame.font.SysFont("consolas", 16)
         self.selected_hex: Tuple[int, int] = (0, 0)
         self.selected_army: Optional[Army] = None
         self.show_overlay = show_overlay
+
         w = self.eng.world
         xs, ys = [], []
         for (q, r) in (
@@ -65,6 +76,20 @@ class GameGUI:
         self.world_w = max(xs) if xs else 0.0
         self.world_h = max(ys) if ys else 0.0
         self.center_on(*self.selected_hex)
+
+        # Cache frequently used geometry for tiles
+        self.tile_cache: dict[tuple[int, int], tuple[float, float, list[tuple[float, float]]]] = {}
+        for t in w.tiles:
+            cx, cy = axial_to_pixel(t.q, t.r, self.hex_px)
+            pts = hex_polygon(t.q, t.r, self.hex_px)
+            self.tile_cache[(t.q, t.r)] = (cx, cy, pts)
+
+        # HUD caching
+        self._hud_text = ""
+        self._hud_surface: Optional[pygame.Surface] = None
+
+        # Simulation timer decoupled from render FPS
+        pygame.time.set_timer(self.SIM_EVENT, 200)
 
     # utils
     def clamp_camera(self) -> None:
@@ -124,6 +149,21 @@ class GameGUI:
             tint = OWNER_TINTS[tile.owner % len(OWNER_TINTS)]
             col = tuple(min(255, (c + t) // 2) for c, t in zip(col, tint))
         return col
+
+    def iter_visible_tiles(self):
+        """Yield tiles that fall within the current camera view."""
+        w = self.eng.world
+        sw, sh = self.screen.get_size()
+        wx0, wy0 = self.screen_to_world(0, 0)
+        wx1, wy1 = self.screen_to_world(sw, sh)
+        # Expand bounds slightly to avoid gaps at edges
+        pad = self.hex_px * 2
+        min_q, min_r = pixel_to_axial(wx0 - pad, wy0 - pad, self.hex_px)
+        max_q, max_r = pixel_to_axial(wx1 + pad, wy1 + pad, self.hex_px)
+        for r in range(min_r, max_r + 1):
+            for q in range(min_q, max_q + 1):
+                if w.in_bounds(q, r):
+                    yield w.get_tile(q, r)
 
     def center_on(self, q: int, r: int) -> None:
         wx, wy = axial_to_pixel(q, r, self.hex_px)
@@ -229,9 +269,12 @@ class GameGUI:
                     self.handle_key(ev)
                 elif ev.type == pygame.MOUSEBUTTONDOWN:
                     self.handle_mouse(ev)
+                elif ev.type == self.SIM_EVENT:
+                    # Advance simulation on a separate timer
+                    self.eng.advance_turn()
             self.draw()
             pygame.display.flip()
-            self.clock.tick(60)
+            self.clock.tick(self.fps)
         pygame.quit()
         sys.exit(0)
 
@@ -241,8 +284,10 @@ class GameGUI:
         w = self.eng.world
         zoom = self.zoom
         sw, sh = scr.get_size()
-        for t in w.tiles:
-            cx, cy = axial_to_pixel(t.q, t.r, self.hex_px)
+
+        # Draw only tiles currently visible
+        for t in self.iter_visible_tiles():
+            cx, cy, pts_world = self.tile_cache[(t.q, t.r)]
             sx, sy = self.world_to_screen(cx, cy)
             psx, psy = self.project_point(sx, sy)
             size = self.hex_px * zoom
@@ -253,12 +298,12 @@ class GameGUI:
                 or psy - size > sh
             ):
                 continue
-            pts = hex_polygon(t.q, t.r, self.hex_px)
-            pts = [self.world_to_screen(px, py) for px, py in pts]
+            pts = [self.world_to_screen(px, py) for px, py in pts_world]
             pts = [self.project_point(px, py) for px, py in pts]
             pygame.draw.polygon(scr, self.tile_color(t), pts)
             if self.selected_hex == (t.q, t.r):
                 pygame.draw.polygon(scr, (255, 255, 255), pts, 2)
+
         for a in w.armies:
             cx, cy = axial_to_pixel(a.q, a.r, self.hex_px)
             sx, sy = self.world_to_screen(cx, cy)
@@ -288,8 +333,12 @@ class GameGUI:
             hud_parts.append(
                 f"army{aid} str:{self.selected_army.strength} tgt:{self.selected_army.target}"
             )
-        hud = self.font.render(" | ".join(hud_parts), True, (240, 240, 240))
-        scr.blit(hud, (8, 8))
+        hud_str = " | ".join(hud_parts)
+        if hud_str != self._hud_text:
+            self._hud_text = hud_str
+            self._hud_surface = self.font.render(hud_str, True, (240, 240, 240))
+        if self._hud_surface is not None:
+            scr.blit(self._hud_surface, (8, 8))
         if self.show_overlay:
             pygame.draw.rect(scr, (255, 255, 255), (0, 0, sw - 1, sh - 1), 1)
             pygame.draw.line(scr, (0, 0, 0), (0, 0), (sw - 1, sh - 1), 1)
