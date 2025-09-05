@@ -1,22 +1,43 @@
-> Can we make the armies appear on the gui, lets make them a gray rectangle
+> The Problem
+  The world is using even-q offset coordinates (as seen in the GUI's _evenq_center function and the settlements system), but the expansion logic in sim/loop.py is using axial coordinate neighbor functions from worldgen.hexgrid.
+  In sim/loop.py, the expansion code does this:
+  python# Get hex neighbors using axial coordinates (convert from array indices)
+  current_q, current_r = x, y  # x=col, y=row
+  from worldgen.hexgrid import neighbors6
+  neigh_axial = neighbors6(current_q, current_r)  # WRONG! This uses axial neighbors
+  But the actual world uses even-q offset coordinates, where the neighbor pattern differs based on whether the column (q) is even or odd!
+  The Fix
+  Replace the neighbor logic in sim/loop.py with even-q offset neighbor logic. Here's the corrected expansion section:
+  python# In sim/loop.py, around line 180-200, replace the neighbor fetching with:
 
-● I'll help you add army visualization to the GUI. Let me first find where other overlays are drawn and then add
-  army rendering.
+  # Get even-q offset neighbors (not axial!)
+  def get_even_q_neighbors(q, r):
+      """Get neighbors for even-q offset coordinates."""
+      if q % 2 == 0:  # Even column
+          offsets = [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, -1), (0, 1)]
+      else:  # Odd column
+          offsets = [(1, 0), (1, 1), (0, -1), (-1, 0), (-1, 1), (0, 1)]
 
-● Search(pattern: "draw_settlement_overlays", path: "D:\GodofPy\main.py", output_mode: "content")
-  ⎿  Found 23 lines (ctrl+r to expand)
+      neighbors = []
+      for dq, dr in offsets:
+          nq, nr = q + dq, r + dr
+          if 0 <= nq < w and 0 <= nr < h:
+              neighbors.append((nr, nq))  # Return as (row, col) for array indexing
+      return neighbors
 
-● Perfect! I can see the render structure. Let me check if there's access to armies in the main.py GUI:
+  # Replace the old neighbor fetching with:
+  current_q, current_r = x, y  # x=col, y=row
+  neigh = get_even_q_neighbors(current_q, current_r)
 
-● Search(pattern: "world_state.*armies|armies|world.*armies", path: "D:\GodofPy\main.py", output_mode: "content")
-  ⎿  Found 0 lines
+  # Remove these lines:
+  # from worldgen.hexgrid import neighbors6
+  # neigh_axial = neighbors6(current_q, current_r)
+  # neigh = [(nr, nq) for nq, nr in neigh_axial if 0 <= nq < w and 0 <= nr < h]
+  Why This Happened
+  The codebase is mixing two different hexagonal coordinate systems:
 
-● Let me check what the world_state object contains:
+  Axial coordinates (used in worldgen)
+  Even-q offset coordinates (used in the actual game world)
 
-● Search(pattern: "class.*WorldState|def.*__init__.*world", path: "D:\GodofPy\sim\state.py", output_mode: "content")
-  ⎿  Found 87 lines (ctrl+r to expand)
-
-● I see that WorldState doesn't contain armies - those are in the SimulationEngine. Let me check how the main GUI
-  accesses the engine:
-
-● Search(pattern: "class.*GodsimGUI|def.*__init__.*self|engine|simulation", path: "D:\GodofPy\main.py", output_mode:
+  Even-q offset coordinates have a different neighbor pattern - for even columns, the NE and SE neighbors are at the same row or above, while for odd columns, they're at the same row or below. This is why your expansions were going to the wrong hexes!
+  The same issue likely exists in other places that call worldgen.hexgrid.neighbors6 when they should be using even-q offset logic instead.
