@@ -484,7 +484,7 @@ class SimulationEngine:
             src.pop = max(0, src.pop - SETTLER_COST)
             src._pop_float = float(src.pop)
             dst.owner = cid
-            dst.pop = max(SETTLER_COST, 15)  # Ensure new settlements start with at least 15 population for faster growth
+            dst.pop = SETTLER_COST
             dst._pop_float = float(dst.pop)
             civ.tiles.append((dq, dr))
 
