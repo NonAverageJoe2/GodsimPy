@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from .resources import yields_with_features, carrying_capacity
+from .biome_mechanics import apply_biome_modifiers
 from .time import scale_to_years, step_date
 from .settlements import (
     apply_urban_pressure, apply_growth_bonuses,
@@ -115,6 +116,9 @@ def advance_turn(
     # Apply terrain penalties (mountain growth is slower)
     mountain_mask = (ws.biome_map == 2)
     local_growth_rate[mountain_mask] *= 0.5  # Mountains grow 50% slower
+
+    # Biome-specific population and growth modifiers
+    P, local_growth_rate = apply_biome_modifiers(ws, P, local_growth_rate, ws.biome_map)
     
     # Basic logistic growth
     dP = (local_growth_rate * dt_years) * P * (1.0 - P / (K + 1e-6))

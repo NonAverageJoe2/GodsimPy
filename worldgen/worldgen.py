@@ -115,9 +115,18 @@ def build_world(w: int, h: int, seed: int,
                 plate_count: int,
                 hex_radius: float,
                 sea_level_percentile: float = 0.50,
-                mountain_h: float = 0.80) -> Tuple[np.ndarray, np.ndarray, float, np.ndarray]:
+                mountain_h: float = 0.80,
+                use_advanced_biomes: bool = True) -> Tuple[np.ndarray, np.ndarray, float, np.ndarray]:
+    """Build world heightmap and biome map."""
     height = generate_height(w, h, seed, plate_count, hex_radius)
     sea = float(np.quantile(height, sea_level_percentile))
-    plate_map, vels, XZ = generate_plates(w, h, plate_count, hex_radius, seed)
-    # ``plate_map`` and ``XZ`` are retained for compatibility with older API
-    return height.astype(np.float32), plate_map.astype(np.int32), sea, XZ
+    plate_map, _vels, _XZ = generate_plates(w, h, plate_count, hex_radius, seed)
+
+    if use_advanced_biomes:
+        from .biomes import build_biomes_advanced
+        biomes = build_biomes_advanced(height, sea, mountain_h, seed)
+    else:
+        from .biomes import build_biomes
+        biomes = build_biomes(height, sea, mountain_h)
+
+    return height.astype(np.float32), biomes.astype(np.int32), sea, plate_map.astype(np.int32)

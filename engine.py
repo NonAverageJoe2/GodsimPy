@@ -15,7 +15,6 @@ from technology import (
     apply_tech_bonuses_to_tile
 )
 
-from worldgen import apply_worldgen
 from worldgen.hexgrid import neighbors6
 from worldgen.hexgrid import distance as hex_distance
 from worldgen.biomes import Biome
@@ -204,10 +203,30 @@ class SimulationEngine:
                      turn=0, seed=seed)
 
     def init_worldgen(self, sea_percentile: float = 0.35,
-                      mountain_thresh: float = 0.8) -> None:
-        """(Re)generate world terrain and biomes using deterministic worldgen."""
-        apply_worldgen(self, sea_percentile=sea_percentile,
-                       mountain_thresh=mountain_thresh)
+                      mountain_thresh: float = 0.8,
+                      use_advanced_biomes: bool = True) -> None:
+        """Generate world terrain and biomes using enhanced system."""
+        from worldgen import build_world
+        from worldgen.biomes import Biome
+
+        w = self.world.width_hex
+        h = self.world.height_hex
+        seed = self.world.seed
+
+        height, biomes, sea, _ = build_world(
+            w, h, seed,
+            plate_count=12,
+            hex_radius=12.0,
+            sea_level_percentile=sea_percentile,
+            mountain_h=mountain_thresh,
+            use_advanced_biomes=use_advanced_biomes,
+        )
+
+        self.world.sea_level = sea
+        for t in self.world.tiles:
+            biome_id = biomes[t.r, t.q]
+            t.biome = Biome(biome_id).name.lower()
+            t.height = float(height[t.r, t.q])
 
     def seed_population_everywhere(self, min_pop=3, max_pop=30) -> None:
         for t in self.world.tiles:
