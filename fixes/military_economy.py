@@ -7,6 +7,8 @@ from enum import Enum
 import math
 import numpy as np
 
+from modifiers import MODIFIERS
+
 class SupplySource(Enum):
     """Types of supply sources for armies."""
     CAPITAL = "capital"
@@ -37,9 +39,11 @@ class MilitaryEconomy:
     """Manages all military-economic interactions."""
     
     # Food economy
-    food_per_pop_per_year: float = 1.0
-    food_per_soldier_per_year: float = 1.5  # Soldiers eat more
-    army_creation_food_cost_multiplier: float = 3.0  # Initial equipment/training
+    food_per_pop_per_year: float = MODIFIERS.food_per_pop_per_year
+    food_per_soldier_per_year: float = MODIFIERS.food_per_soldier_per_year  # Soldiers eat more
+    army_creation_food_cost_multiplier: float = (
+        MODIFIERS.army_creation_food_cost_multiplier
+    )  # Initial equipment/training
     
     # Maintenance costs
     gold_per_soldier_per_year: float = 2.0

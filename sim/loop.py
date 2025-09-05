@@ -5,10 +5,11 @@ import numpy as np
 from .resources import yields_with_features, carrying_capacity
 from .time import scale_to_years, step_date
 from .settlements import (
-    apply_urban_pressure, apply_growth_bonuses, 
+    apply_urban_pressure, apply_growth_bonuses,
     get_settlement_upgrade_candidate, enforce_settlement_population_hierarchy,
     get_evenq_hex_neighbors, SETTLEMENT_CONFIG
 )
+from modifiers import MODIFIERS
 
 
 def advance_turn(
@@ -16,10 +17,10 @@ def advance_turn(
     *,
     feature_map=None,
     rng_seed=None,
-    growth_rate: float = 0.04,
-    growth_variance: float = 0.2,
-    food_per_pop: float = 1.0,
-    disaster_rate: float = 0.02,
+    growth_rate: float | None = None,
+    growth_variance: float | None = None,
+    food_per_pop: float | None = None,
+    disaster_rate: float | None = None,
     min_settle_pop: float = 25.0,
     settler_cost: float = 10.0,
     pressure_threshold: float = 0.7,
@@ -62,6 +63,15 @@ def advance_turn(
         step_count = int(steps)
 
     dt_years = scale_to_years(ws.time_scale) * max(1, step_count)
+
+    if growth_rate is None:
+        growth_rate = MODIFIERS.base_population_growth_rate
+    if growth_variance is None:
+        growth_variance = MODIFIERS.growth_variance
+    if food_per_pop is None:
+        food_per_pop = MODIFIERS.food_per_pop
+    if disaster_rate is None:
+        disaster_rate = MODIFIERS.disaster_rate
 
     if ws.paused and steps > 0:
         return ws
