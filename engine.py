@@ -111,6 +111,10 @@ class Civ:
     manpower_used: int = 0
     manpower_limit: int = 0
 
+    # --- Culture and naming ---
+    main_culture: Optional[str] = "Unknown Culture"  # Name of the main culture
+    linguistic_type: str = "latin"
+    
     # --- Technology display/state mirrors (kept here for quick summary/save) ---
     current_age: str = "Age of Dissemination"
     tech_count: int = 0
@@ -146,7 +150,7 @@ class World:
     seed: int = 42
     time_scale: str = "week"
     calendar: Calendar = field(default_factory=Calendar)
-    colonize_period_years: float = 0.25
+    colonize_period_years: float = 0.3  # More frequent expansion attempts for better growth
     colonize_elapsed: float = 0.0
 
     @property
@@ -210,12 +214,25 @@ class SimulationEngine:
             t.pop = self.rng.randint(min_pop, max_pop)
             t.owner = None
 
-    def add_civ(self, name: str, at: Coord) -> int:
+    def add_civ(self, name: str, at: Coord, main_culture: str = None, linguistic_type: str = None) -> int:
+        """Add a civilization with explicit name and culture."""
         q, r = at
         if not self.world.in_bounds(q, r):
             raise ValueError("Civ spawn out of bounds")
         cid = self._next_civ_id()
-        civ = Civ(civ_id=cid, name=name, stock_food=50, tiles=[])
+        
+        # Use provided culture info or defaults
+        final_main_culture = main_culture if main_culture else "Unknown Culture"
+        final_linguistic_type = linguistic_type if linguistic_type else "latin"
+        
+        civ = Civ(
+            civ_id=cid, 
+            name=name, 
+            stock_food=75,
+            tiles=[],
+            main_culture=final_main_culture,
+            linguistic_type=final_linguistic_type
+        )
         self.world.civs[cid] = civ
 
         t = self.world.get_tile(q, r)
@@ -238,6 +255,33 @@ class SimulationEngine:
             civ.research_progress = state.research_progress
 
         return cid
+
+    def spawn_civ(self, at: Coord, name_generator=None) -> int:
+        """Spawn a new civilization with generated name and culture."""
+        # Import name generator if not provided
+        if name_generator is None:
+            try:
+                import sys
+                import os
+                sys.path.append(os.path.dirname(__file__))
+                from name_generator import NameGenerator
+                name_generator = NameGenerator(self.world.seed + len(self.world.civs))
+            except ImportError:
+                # Fallback to manual naming if name generator not available
+                return self.add_civ(f"Civilization {len(self.world.civs) + 1}", at)
+        
+        # Generate linguistic type and culture name
+        civ_id_for_seed = len(self.world.civs)  
+        linguistic_type = name_generator.assign_linguistic_type_to_culture(civ_id_for_seed, self.world.seed)
+        culture_name = name_generator.generate_culture_name(style=linguistic_type)
+        country_name = name_generator.generate_country_name(style=linguistic_type)
+        
+        return self.add_civ(
+            name=country_name,
+            at=at,
+            main_culture=culture_name,
+            linguistic_type=linguistic_type
+        )
 
     def add_army(self, civ_id: int, at: Coord, strength: int = 10,
                  supply: int = 100) -> Army:
@@ -366,7 +410,9 @@ class SimulationEngine:
 
         for cid, g in gains.items():
             civ = w.civs[cid]
-            civ.stock_food = max(0, min(civ.stock_food + int(g), POP_MAX))
+            # Increase food cap scaling with territory size to support larger civilizations
+            max_food = max(1000, len(w.civs[cid].tiles) * 200)
+            civ.stock_food = max(0, min(civ.stock_food + int(g), max_food))
 
         # --- Periodic colonization with tech expansion modifier ----------------
         w.colonize_elapsed += dt
@@ -382,9 +428,9 @@ class SimulationEngine:
 
     def _colonization_pass_with_tech(self) -> None:
         w = self.world
-        POP_THRESHOLD_BASE = 50
+        POP_THRESHOLD_BASE = 30  # Reduced threshold to allow expansion when population is stable
         SETTLER_COST = 10
-        FOOD_COST_FOR_EXPANSION = 20  # Food cost for creating a new settlement
+        FOOD_COST_FOR_EXPANSION = 20  # Balanced food cost for sustainable expansion
         actions: List[Tuple[int, Coord, Coord]] = []
         claimed: set[Coord] = set()
 
@@ -401,12 +447,22 @@ class SimulationEngine:
                 bonuses = self.tech_system.get_civ_bonuses(cid)
                 expansion_bonus = bonuses.territory_expansion_rate
             pop_threshold = POP_THRESHOLD_BASE * (1 - 0.3 * expansion_bonus)
+            
+            # Limit expansions per turn based on civ size to prevent runaway growth
+            current_tiles = len(civ.tiles)
+            max_expansions_this_turn = max(1, min(3, current_tiles // 10))  # 1-3 expansions max, scaling with size
+            expansions_this_turn = 0
 
             for (q, r) in sorted(civ.tiles):
+                # Stop if this civ has reached its expansion limit for this turn
+                if expansions_this_turn >= max_expansions_this_turn:
+                    break
+                    
                 t = w.get_tile(q, r)
                 if t.pop < pop_threshold:
                     continue
-                neighbors = sorted(w.neighbors6(q, r))
+                neighbors = list(w.neighbors6(q, r))
+                self.rng.shuffle(neighbors)  # Randomize expansion direction for more natural patterns
                 for nq, nr in neighbors:
                     if (nq, nr) in claimed:
                         continue
@@ -414,7 +470,8 @@ class SimulationEngine:
                     if tt.owner is None:
                         actions.append((cid, (q, r), (nq, nr)))
                         claimed.add((nq, nr))
-                    break
+                        expansions_this_turn += 1
+                        break  # Only expand to one neighbor per tile per pass
 
         for cid, (sq, sr), (dq, dr) in actions:
             src = w.get_tile(sq, sr)
@@ -427,7 +484,7 @@ class SimulationEngine:
             src.pop = max(0, src.pop - SETTLER_COST)
             src._pop_float = float(src.pop)
             dst.owner = cid
-            dst.pop = SETTLER_COST
+            dst.pop = max(SETTLER_COST, 15)  # Ensure new settlements start with at least 15 population for faster growth
             dst._pop_float = float(dst.pop)
             civ.tiles.append((dq, dr))
 
@@ -601,6 +658,9 @@ class SimulationEngine:
                     "name": c.name,
                     "stock_food": c.stock_food,
                     "tiles": c.tiles,
+                    # culture information
+                    "main_culture": c.main_culture,
+                    "linguistic_type": c.linguistic_type,
                     # tech mirrors useful for quick UI (true state in technology blob)
                     "current_age": c.current_age,
                     "tech_count": c.tech_count,
@@ -677,6 +737,9 @@ class SimulationEngine:
                 name=cd["name"],
                 stock_food=cd["stock_food"],
                 tiles=[tuple(t) for t in cd["tiles"]],
+                # culture information with backwards compatibility
+                main_culture=cd.get("main_culture", cd.get("culture_name", "Unknown Culture")),
+                linguistic_type=cd.get("linguistic_type", "latin"),
                 current_age=cd.get("current_age", "Age of Dissemination"),
                 tech_count=cd.get("tech_count", 0),
                 current_research=cd.get("current_research"),

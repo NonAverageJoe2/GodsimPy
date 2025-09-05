@@ -16,6 +16,7 @@ class Culture:
     name: str
     color: Tuple[int, int, int]
     origin: Tuple[int, int]  # (r, c) where this culture originated
+    linguistic_type: str = "latin"  # Default linguistic pattern
     
 
 @dataclass 
@@ -204,12 +205,23 @@ def create_cultures_and_religions(h: int, w: int, biome_map: NDArray[np.uint8],
                                 seed: int = 0) -> Tuple[List[Culture], List[Religion], 
                                                        NDArray[np.int32], NDArray[np.int32]]:
     """Create cultures and religions with their respective maps."""
+    import sys
+    import os
+    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+    from name_generator import NameGenerator
+    
     rng = np.random.default_rng(seed)
     
+    # Initialize name generator
+    name_gen = NameGenerator(seed)
+    
+    # Ensure minimum 8 cultures for good diversity
+    actual_num_cultures = max(8, num_cultures)
+    
     # Generate culture origins and create Voronoi map
-    culture_origins = generate_culture_origins(h, w, num_cultures, biome_map, seed)
+    culture_origins = generate_culture_origins(h, w, actual_num_cultures, biome_map, seed)
     culture_map = create_voronoi_map(h, w, culture_origins)
-    culture_map = add_cultural_noise(culture_map, biome_map, noise_factor=0.15, seed=seed)
+    culture_map = add_cultural_noise(culture_map, biome_map, noise_factor=0.2, seed=seed)
     
     # Generate religion origins (can be different from culture origins)
     religion_origins = generate_culture_origins(h, w, num_religions, biome_map, seed + 1000)
@@ -221,30 +233,50 @@ def create_cultures_and_religions(h: int, w: int, biome_map: NDArray[np.uint8],
     culture_map[invalid_mask] = -1
     religion_map[invalid_mask] = -1
     
-    # Create culture objects
-    culture_names = generate_culture_names(num_cultures)
-    culture_colors = create_palette(num_cultures, hue_offset=0.0)
+    # Create culture objects with unique linguistic types and names
+    culture_colors = create_palette(actual_num_cultures, hue_offset=0.0)
     cultures = []
     
-    for i in range(num_cultures):
+    # Track used linguistic types to ensure diversity
+    used_linguistic_types = set()
+    available_types = name_gen.get_available_linguistic_types()
+    
+    for i in range(actual_num_cultures):
+        # Assign linguistic type with diversity - reuse after all types used
+        if len(used_linguistic_types) >= len(available_types):
+            used_linguistic_types.clear()  # Start over for more cultures
+        
+        # Pick a linguistic type we haven't used recently
+        available_for_selection = [t for t in available_types if t not in used_linguistic_types]
+        if not available_for_selection:
+            available_for_selection = available_types
+            
+        linguistic_type = rng.choice(available_for_selection)
+        used_linguistic_types.add(linguistic_type)
+        
+        # Generate culture name with this linguistic type
+        culture_name = name_gen.generate_culture_name(style=linguistic_type)
+        
         culture = Culture(
             id=i,
-            name=culture_names[i],
+            name=culture_name,
             color=culture_colors[i],
-            origin=culture_origins[i]
+            origin=culture_origins[i],
+            linguistic_type=linguistic_type
         )
         cultures.append(culture)
     
-    # Create religion objects  
-    religion_names = generate_religion_names(num_religions)
+    # Create religion objects using name generator
     religion_symbols = generate_religion_symbols(num_religions)
     religion_colors = create_palette(num_religions, hue_offset=0.3)  # Different hue offset
     religions = []
     
     for i in range(num_religions):
+        religion_name = name_gen.generate_religion_name()
+        
         religion = Religion(
             id=i,
-            name=religion_names[i],
+            name=religion_name,
             color=religion_colors[i],
             symbol=religion_symbols[i],
             origin=religion_origins[i]

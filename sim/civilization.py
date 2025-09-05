@@ -239,10 +239,31 @@ def initialize_civs(
         if hasattr(ws, 'religion_map') and ws.religion_map is not None:
             religion_id = int(ws.religion_map[r, c])
         
-        if i < 26:
-            name = f"Civ {chr(65 + i)}"
-        else:
-            name = f"Civ {i}"
+        # Assign civ to the culture at their spawn location
+        culture_linguistic_type = "latin"  # Default fallback
+        
+        if hasattr(ws, 'culture_map') and ws.culture_map is not None and culture_id >= 0:
+            # Get the linguistic type from cultures if available
+            if cultures and culture_id < len(cultures):
+                culture = cultures[culture_id]
+                if hasattr(culture, 'linguistic_type'):
+                    culture_linguistic_type = culture.linguistic_type
+        
+        # Generate civilization name using culture's linguistic type
+        try:
+            import sys
+            import os
+            sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+            from name_generator import NameGenerator
+            name_gen = NameGenerator(seed + i * 1000)
+            name = name_gen.generate_country_name(style=culture_linguistic_type)
+        except ImportError:
+            # Fallback to simple naming if name generator not available
+            if i < 26:
+                name = f"Civ {chr(65 + i)}"
+            else:
+                name = f"Civ {i}"
+        
         rng_seed = seed ^ (i * 9973 + 12345)
         civs.append(Civilization(
             id=i, 

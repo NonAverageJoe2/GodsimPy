@@ -33,9 +33,24 @@ class HexPopup:
         self.target_alpha = 0
         self.fade_speed = 15
         
+        # Cached data to avoid expensive recalculations
+        self._cached_tile_pos: Optional[Tuple[int, int]] = None
+        self._cached_popup_surface: Optional[pygame.Surface] = None
+        self._cached_world_turn: Optional[int] = None
+        self._cached_yields: Optional[dict] = None
+        
     def show(self, tile_q: int, tile_r: int, screen_x: int, screen_y: int):
         """Show the popup for a specific tile."""
-        self.tile_pos = (tile_q, tile_r)
+        new_tile_pos = (tile_q, tile_r)
+        
+        # Invalidate cache if tile changed
+        if new_tile_pos != self._cached_tile_pos:
+            self._cached_tile_pos = None
+            self._cached_popup_surface = None
+            self._cached_world_turn = None
+            self._cached_yields = None
+        
+        self.tile_pos = new_tile_pos
         self.screen_pos = (screen_x, screen_y)
         self.visible = True
         self.target_alpha = 255
@@ -59,7 +74,13 @@ class HexPopup:
         if not self.visible or self.alpha == 0 or not self.tile_pos:
             return
         
-        q, r = self.tile_pos
+        # Check if we need to regenerate the popup content
+        need_regenerate = (self._cached_tile_pos != self.tile_pos or 
+                          self._cached_world_turn != world_state.turn or
+                          self._cached_popup_surface is None)
+        
+        if need_regenerate:
+            self._generate_popup_content(world_state, civs, feature_map)
         
         # Calculate popup position (avoid going off-screen)
         x = self.screen_pos[0] + 20
@@ -73,9 +94,22 @@ class HexPopup:
         if y + self.height > surface.get_height():
             y = surface.get_height() - self.height - 10
         
-        # Create popup surface with alpha
+        # Apply current alpha to cached surface and draw
+        if self._cached_popup_surface:
+            display_surface = self._cached_popup_surface.copy()
+            display_surface.set_alpha(self.alpha)
+            surface.blit(display_surface, (x, y))
+    
+    def _generate_popup_content(self, world_state: WorldState, civs: List, 
+                               feature_map: Optional[np.ndarray] = None):
+        """Generate the popup content surface (cached)."""
+        if not self.tile_pos:
+            return
+            
+        q, r = self.tile_pos
+        
+        # Create popup surface
         popup_surface = pygame.Surface((self.width, self.height))
-        popup_surface.set_alpha(self.alpha)
         
         # Draw background
         pygame.draw.rect(popup_surface, (20, 20, 30), (0, 0, self.width, self.height))
@@ -166,12 +200,14 @@ class HexPopup:
         self._draw_text(popup_surface, f"Current: {int(pop)} people", self.padding + 5, y_offset)
         y_offset += 18
         
-        # Calculate carrying capacity
-        if feature_map is not None:
-            yields = yields_with_features(world_state.biome_map, feature_map)
-        else:
-            yields = biome_yields(world_state.biome_map)
+        # Calculate carrying capacity (cache yields calculation)
+        if self._cached_yields is None:
+            if feature_map is not None:
+                self._cached_yields = yields_with_features(world_state.biome_map, feature_map)
+            else:
+                self._cached_yields = biome_yields(world_state.biome_map)
         
+        yields = self._cached_yields
         K = carrying_capacity(yields["food"])
         capacity = K[r, q]
         self._draw_text(popup_surface, f"Capacity: {int(capacity)} people", 
@@ -234,7 +270,7 @@ class HexPopup:
         self._draw_section(popup_surface, "NEIGHBORS", y_offset)
         y_offset += 22
         
-        # Count neighboring civs
+        # Count neighboring civs (this is quick so we keep it fresh)
         neighbor_civs = set()
         for dq, dr in [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)]:
             nq, nr = q + dq, r + dr
@@ -263,8 +299,10 @@ class HexPopup:
             self._draw_text(popup_surface, "Isolated tile", self.padding + 5, y_offset,
                            font=self.font_small, color=(150, 150, 150))
         
-        # Blit popup to main surface
-        surface.blit(popup_surface, (x, y))
+        # Cache the generated surface and metadata
+        self._cached_popup_surface = popup_surface
+        self._cached_tile_pos = self.tile_pos
+        self._cached_world_turn = world_state.turn
     
     def _draw_text(self, surface: pygame.Surface, text: str, x: int, y: int,
                    font: Optional[pygame.font.Font] = None, 

@@ -256,9 +256,15 @@ def advance_turn(
             if rng.random() > expansion_prob:
                 continue
                 
-            # Get hex neighbors using consistent even-q coordinate system  
-            current_r, current_q = y, x
-            neigh = get_evenq_hex_neighbors(current_r, current_q, h, w)
+            # Get hex neighbors using axial coordinates (convert from array indices)
+            # Array uses (row, col) but hex logic uses axial (q, r)
+            current_q, current_r = x, y  # Convert array indices to axial coordinates
+            
+            # Get axial neighbors and convert back to array indices
+            from worldgen.hexgrid import neighbors6
+            neigh_axial = neighbors6(current_q, current_r)
+            neigh = [(nr, nq) for nq, nr in neigh_axial if 0 <= nq < w and 0 <= nr < h]
+            
             # Only consider empty land tiles (not ocean or already owned)
             # Mountains are now colonizable but with penalties
             empty = [(ny, nx) for ny, nx in neigh 
@@ -283,12 +289,14 @@ def advance_turn(
                 ny, nx = best_choices[rng.integers(len(best_choices))]
             
             # Double-check that the selected tile is actually adjacent (safety check)
-            source_r, source_q = y, x
-            target_r, target_q = ny, nx
+            # Convert array indices to axial coordinates for proper neighbor checking
+            source_q, source_r = x, y  # Convert array indices to axial coordinates
+            target_q, target_r = nx, ny
             
-            # Verify the target is in our neighbor list and is valid terrain
-            valid_neighbors = get_evenq_hex_neighbors(source_r, source_q, h, w)
-            if (target_r, target_q) not in valid_neighbors:
+            # Verify the target is in our neighbor list using axial coordinates
+            from worldgen.hexgrid import neighbors6
+            valid_neighbors_axial = neighbors6(source_q, source_r)
+            if (target_q, target_r) not in valid_neighbors_axial:
                 continue  # Skip this expansion if somehow not adjacent
             
             # Double-check that target tile is colonizable (not ocean)

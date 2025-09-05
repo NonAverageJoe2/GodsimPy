@@ -81,6 +81,11 @@ class TechTreeWindow:
         self.width = 600
         self.height = 500
         self.padding = 20
+        self.dropdown_open = False
+        self.dropdown_rect = pygame.Rect(0, 0, 0, 0)
+        self.dropdown_screen_rect = pygame.Rect(0, 0, 0, 0)  # For rendering on screen
+        self.dropdown_items = []
+        self.hovered_item = -1  # Index of currently hovered dropdown item
 
         # Fonts (init after pygame.init in GUI ctor)
         self.font_title = pygame.font.Font(None, 24)
@@ -139,20 +144,32 @@ class TechTreeWindow:
 
         civ_id = self.selected_civ_id
         if civ_id not in tech_system.civ_states:
-            surface.blit(window, (x, y))
-            return
+            # Initialize the civilization in the tech system if it doesn't exist
+            tech_system.initialize_civ(civ_id)
+            if civ_id not in tech_system.civ_states:
+                # Show message that tech system is not available for this civ
+                error_text = "Technology system not initialized for this civilization"
+                error_surface = self.font_normal.render(error_text, True, (200, 100, 100))
+                error_rect = error_surface.get_rect(center=(self.width // 2, self.height // 2))
+                window.blit(error_surface, error_rect)
+                surface.blit(window, (x, y))
+                return
 
         civ_name = civs_name_map.get(civ_id, f"Civ {civ_id}")
         civ_state = tech_system.civ_states.get(civ_id)
 
         # Title
-        title = f"{civ_name} - Technology Tree"
+        title = "Technology Tree"
         title_text = self.font_title.render(title, True, (255, 255, 255))
         title_text_rect = title_text.get_rect(center=(self.width // 2, 17))
         window.blit(title_text, title_text_rect)
 
+        # Civ selector dropdown
+        y_offset = 40
+        self._draw_civ_dropdown(window, civs_name_map, y_offset)
+        y_offset += 35
+
         # Age / progress
-        y_offset = 45
         age_val = getattr(civ_state.current_age, "value", str(civ_state.current_age))
         age_text = f"Current Age: {age_val}"
         self._draw_text(window, age_text, self.padding, y_offset, self.font_header, (200, 200, 100))
@@ -217,6 +234,26 @@ class TechTreeWindow:
         except Exception:
             available_techs = []
 
+        # Show debug info if no techs available
+        if not available_techs:
+            debug_y = 10
+            self._draw_text(list_surface, "No available technologies", 10, debug_y, self.font_normal, (150, 150, 150))
+            debug_y += 20
+            
+            # Debug info
+            self._draw_text(list_surface, f"Current Age: {civ_state.current_age}", 10, debug_y, self.font_small, (100, 150, 100))
+            debug_y += 18
+            
+            self._draw_text(list_surface, f"Researched: {len(civ_state.researched_techs)} techs", 10, debug_y, self.font_small, (100, 150, 100))
+            debug_y += 18
+            
+            self._draw_text(list_surface, f"Resources: {list(civ_state.available_resources)}", 10, debug_y, self.font_small, (100, 150, 100))
+            debug_y += 18
+            
+            # Show total techs in tree
+            total_techs = len(tech_system.tech_tree.technologies)
+            self._draw_text(list_surface, f"Total techs in tree: {total_techs}", 10, debug_y, self.font_small, (100, 100, 150))
+        
         tech_y = 5 - self.scroll_y
         for tech in available_techs:
             if -50 < tech_y < list_height:
@@ -263,16 +300,100 @@ class TechTreeWindow:
         text_surface = font.render(text, True, color)
         surface.blit(text_surface, (x, y))
 
-    def handle_click(self, mouse_x: int, mouse_y: int, screen_size: Tuple[int, int]) -> bool:
+    def _draw_civ_dropdown(self, surface: pygame.Surface, civs_name_map: Dict[int, str], y_offset: int):
+        """Draw civilization selector dropdown."""
+        if not civs_name_map:
+            return
+            
+        # Dropdown button
+        dropdown_width = 200
+        dropdown_height = 25
+        dropdown_x = (self.width - dropdown_width) // 2
+        
+        self.dropdown_rect = pygame.Rect(dropdown_x, y_offset, dropdown_width, dropdown_height)
+        
+        # Current selection
+        current_civ_name = civs_name_map.get(self.selected_civ_id, "No Civ Selected")
+        
+        # Draw main dropdown button
+        button_color = (60, 60, 80) if not self.dropdown_open else (80, 80, 100)
+        pygame.draw.rect(surface, button_color, self.dropdown_rect)
+        pygame.draw.rect(surface, (100, 100, 120), self.dropdown_rect, 1)
+        
+        # Dropdown text
+        text_surface = self.font_normal.render(current_civ_name, True, (255, 255, 255))
+        text_rect = text_surface.get_rect(center=self.dropdown_rect.center)
+        surface.blit(text_surface, text_rect)
+        
+        # Dropdown arrow
+        arrow_x = dropdown_x + dropdown_width - 20
+        arrow_y = y_offset + dropdown_height // 2
+        arrow_points = [
+            (arrow_x, arrow_y - 3),
+            (arrow_x + 6, arrow_y + 3),
+            (arrow_x - 6, arrow_y + 3)
+        ]
+        pygame.draw.polygon(surface, (200, 200, 200), arrow_points)
+        
+        # Store dropdown info for later rendering (don't draw list here)
+        if self.dropdown_open:
+            self.dropdown_items = list(civs_name_map.items())
+        else:
+            self.dropdown_items = []
+
+    def handle_click(self, mouse_x: int, mouse_y: int, screen_size: Tuple[int, int], civs_name_map: Dict[int, str] = None) -> bool:
         """Returns True if window was closed."""
         if not self.visible:
             return False
         screen_w, screen_h = screen_size
         window_x = (screen_w - self.width) // 2
         window_y = (screen_h - self.height) // 2
-        close_x = window_x + self.width - 30
-        close_y = window_y + 5
-        if close_x <= mouse_x <= close_x + 25 and close_y <= mouse_y <= close_y + 25:
+        
+        # Convert screen coordinates to window coordinates
+        local_x = mouse_x - window_x
+        local_y = mouse_y - window_y
+        
+        # Handle dropdown clicks - check list items first
+        if self.dropdown_open and civs_name_map:
+            # Calculate dropdown list position (same as in render_dropdown_overlay)
+            screen_w, screen_h = screen_size
+            window_x = (screen_w - self.width) // 2
+            window_y = (screen_h - self.height) // 2
+            dropdown_width = 200
+            dropdown_height = 25
+            dropdown_x = window_x + (self.width - dropdown_width) // 2
+            dropdown_y = window_y + 40 + dropdown_height  # y_offset + dropdown_height
+            list_height = min(len(civs_name_map) * 25, 150)  # Max 6 items visible
+            dropdown_list_rect = pygame.Rect(dropdown_x, dropdown_y, dropdown_width, list_height)
+            
+            # First check if clicking on dropdown list items (highest priority)
+            if dropdown_list_rect.collidepoint(mouse_x, mouse_y):
+                # Calculate which item was clicked
+                relative_y = mouse_y - dropdown_y
+                item_index = relative_y // 25
+                civ_ids = list(civs_name_map.keys())
+                if 0 <= item_index < len(civ_ids):
+                    self.selected_civ_id = civ_ids[item_index]
+                    self.dropdown_open = False
+                    return False  # Don't close window
+            # Then check if clicking dropdown button while open
+            elif civs_name_map and self.dropdown_rect.collidepoint(local_x, local_y):
+                # Clicked dropdown button while open - close it
+                self.dropdown_open = False
+                return False
+            else:
+                # Click outside dropdown closes it
+                self.dropdown_open = False
+                return False
+        elif civs_name_map and self.dropdown_rect.collidepoint(local_x, local_y):
+            # Open dropdown (only if not currently open)
+            self.dropdown_open = True
+            return False  # Don't close window
+        
+        # Close button
+        close_x = self.width - 30
+        close_y = 5
+        if close_x <= local_x <= close_x + 25 and close_y <= local_y <= close_y + 25:
             self.hide()
             return True
         return False
@@ -280,6 +401,71 @@ class TechTreeWindow:
     def handle_scroll(self, delta: int):
         if self.visible:
             self.scroll_y = max(0, self.scroll_y - delta * 20)
+    
+    def render_dropdown_overlay(self, screen: pygame.Surface):
+        """Render dropdown list on top of everything else."""
+        if not self.visible or not self.dropdown_open or not self.dropdown_items:
+            return
+            
+        # Calculate window position
+        screen_w, screen_h = screen.get_size()
+        window_x = (screen_w - self.width) // 2
+        window_y = (screen_h - self.height) // 2
+        
+        # Dropdown position
+        dropdown_width = 200
+        dropdown_height = 25
+        dropdown_x = window_x + (self.width - dropdown_width) // 2
+        dropdown_y = window_y + 40 + dropdown_height  # y_offset + dropdown_height
+        
+        # List dimensions
+        list_height = min(len(self.dropdown_items) * 25, 150)  # Max 6 items visible
+        list_rect = pygame.Rect(dropdown_x, dropdown_y, dropdown_width, list_height)
+        
+        # Background
+        pygame.draw.rect(screen, (40, 40, 50), list_rect)
+        pygame.draw.rect(screen, (100, 100, 120), list_rect, 1)
+        
+        # Items
+        for i, (civ_id, civ_name) in enumerate(self.dropdown_items):
+            if i * 25 >= list_height:
+                break
+                
+            item_y = dropdown_y + i * 25
+            item_rect = pygame.Rect(dropdown_x, item_y, dropdown_width, 25)
+            
+            # Highlight current selection or hovered item
+            if civ_id == self.selected_civ_id:
+                pygame.draw.rect(screen, (80, 100, 80), item_rect)
+            elif i == self.hovered_item:
+                # Glow effect for hovered item
+                pygame.draw.rect(screen, (120, 120, 160), item_rect)  # Light blue glow
+                pygame.draw.rect(screen, (160, 160, 200), item_rect, 2)  # Brighter border
+                
+            # Item text
+            text_color = (255, 255, 255) if i != self.hovered_item else (255, 255, 200)  # Slightly yellow when hovered
+            item_text = self.font_small.render(civ_name, True, text_color)
+            item_text_rect = item_text.get_rect(center=item_rect.center)
+            screen.blit(item_text, item_text_rect)
+            
+        # Update screen rect for click detection
+        self.dropdown_screen_rect = list_rect
+    
+    def update_hover(self, mouse_x: int, mouse_y: int):
+        """Update which dropdown item is being hovered."""
+        if self.visible and self.dropdown_open and self.dropdown_items:
+            if hasattr(self, 'dropdown_screen_rect') and self.dropdown_screen_rect.collidepoint(mouse_x, mouse_y):
+                # Calculate which item is hovered
+                relative_y = mouse_y - self.dropdown_screen_rect.y
+                item_index = relative_y // 25
+                if 0 <= item_index < len(self.dropdown_items):
+                    self.hovered_item = item_index
+                else:
+                    self.hovered_item = -1
+            else:
+                self.hovered_item = -1
+        else:
+            self.hovered_item = -1
 
 
 class TechInfoPanel:
@@ -622,9 +808,21 @@ class HexRenderer:
         surface.fill((10, 10, 30))
         H, W = self.world_state.height, self.world_state.width
 
-        # PASS 1: hex tiles
+        # PASS 1: hex tiles (with viewport culling for performance)
+        screen_w, screen_h = surface.get_size()
+        margin = self.hex_radius * 2  # Extra margin for partial visibility
+        
         for r in range(H):
             for q in range(W):
+                # Quick viewport culling: check if hex center is roughly visible
+                cx, cy = _evenq_center(q, r, self.hex_radius)
+                sx, sy = camera.world_to_screen(cx, cy, screen_w, screen_h)
+                
+                # Skip hexes that are clearly outside the visible area
+                if (sx < -margin or sx > screen_w + margin or 
+                    sy < -margin or sy > screen_h + margin):
+                    continue
+                
                 color = self.get_hex_color(q, r, view_mode)
                 outline = None
                 if view_mode == ViewMode.TERRAIN and self.world_state.owner_map[r, q] >= 0:
@@ -713,18 +911,35 @@ class HexRenderer:
 
     def get_hex_at_point(self, wx: float, wy: float) -> Optional[Tuple[int, int]]:
         """World -> (q,r) using even-q centers (regular flat-top hexes)."""
+        r_hex = self.hex_radius
+        H, W = self.world_state.height, self.world_state.width
+        
+        # Quick mathematical approximation to find nearby hexes instead of brute force
+        hex_w = 2.0 * r_hex
+        hex_h = SQRT3 * r_hex
+        horiz = 0.75 * hex_w  # 1.5 * radius
+        vert = hex_h  # sqrt(3) * radius
+        
+        # Estimate q,r from world coordinates
+        approx_q = int(round(wx / horiz))
+        approx_r = int(round((wy - (hex_h * 0.5 if (approx_q & 1) else 0.0) - hex_h * 0.5) / vert))
+        
+        # Check a small area around the approximation instead of all hexes
+        pick_r2 = (0.95 * r_hex) ** 2
         best_q = best_r = None
         best_d2 = float("inf")
-        r_hex = self.hex_radius
-        pick_r2 = (0.95 * r_hex) ** 2
-
-        H, W = self.world_state.height, self.world_state.width
-        for r in range(H):
-            for q in range(W):
-                cx, cy = _evenq_center(q, r, r_hex)
-                d2 = (wx - cx) ** 2 + (wy - cy) ** 2
-                if d2 < best_d2 and d2 <= pick_r2:
-                    best_d2, best_q, best_r = d2, q, r
+        
+        # Only check a 3x3 area around the approximation
+        for dr in range(-1, 2):
+            for dq in range(-1, 2):
+                q = approx_q + dq
+                r = approx_r + dr
+                
+                if 0 <= q < W and 0 <= r < H:
+                    cx, cy = _evenq_center(q, r, r_hex)
+                    d2 = (wx - cx) ** 2 + (wy - cy) ** 2
+                    if d2 < best_d2 and d2 <= pick_r2:
+                        best_d2, best_q, best_r = d2, q, r
 
         return (best_q, best_r) if best_q is not None else None
 
@@ -755,8 +970,8 @@ class HexRenderer:
 
         pygame.draw.polygon(surface, color, verts)
         
-        # Draw semi-transparent hex grid borders
-        if camera.zoom > 0.4:
+        # Draw semi-transparent hex grid borders (skip when zoomed out for performance)
+        if camera.zoom > 0.6:
             pygame.draw.polygon(surface, (60, 60, 60), verts, 1)
         
         # Keep basic outlines (selection/hover will be drawn later)
@@ -835,12 +1050,13 @@ class HexRenderer:
         """Get neighbor coordinates for direction index using even-q offset.
         dir_idx: 0=E, 1=NE, 2=NW, 3=W, 4=SW, 5=SE
         """
+        # Correct even-q offset neighbor patterns for flat-top hexes
         if q % 2 == 0:  # Even column
-            offsets = [(0,1), (-1,0), (-1,-1), (0,-1), (1,-1), (1,0)]  # [E, NE, NW, W, SW, SE]
-        else:  # Odd column
-            offsets = [(0,1), (-1,1), (-1,0), (0,-1), (1,0), (1,1)]   # [E, NE, NW, W, SW, SE]
+            offsets = [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, -1), (0, 1)]  # [E, NE, NW, W, SW, SE]
+        else:  # Odd column  
+            offsets = [(1, 0), (1, 1), (0, -1), (-1, 0), (-1, 1), (0, 1)]    # [E, NE, NW, W, SW, SE]
         
-        dr, dq = offsets[dir_idx]
+        dq, dr = offsets[dir_idx]
         return (q + dq, r + dr)
     
     def _draw_civ_borders(self, surface: pygame.Surface, camera: "Camera"):
@@ -857,6 +1073,14 @@ class HexRenderer:
             for q in range(w):
                 owner = self.world_state.owner_map[r, q]
                 if owner < 0:  # Skip unowned hexes
+                    continue
+                
+                # Quick viewport culling for border drawing
+                cx, cy = _evenq_center(q, r, self.hex_radius)
+                sx, sy = camera.world_to_screen(cx, cy, screen_w, screen_h)
+                margin = self.hex_radius * 3  # Larger margin for borders
+                if (sx < -margin or sx > screen_w + margin or 
+                    sy < -margin or sy > screen_h + margin):
                     continue
                     
                 # Check all 6 directions for borders with different owners
@@ -1066,6 +1290,11 @@ class InfoPanel:
         self.expanded_rect = self.collapsed_rect.copy()
         self.change_civ_rect = pygame.Rect(0, 0, 0, 0)
         self.close_rect = pygame.Rect(0, 0, 0, 0)
+        self.dropdown_open = False
+        self.dropdown_rect = pygame.Rect(0, 0, 0, 0)
+        self.dropdown_screen_rect = pygame.Rect(0, 0, 0, 0)
+        self.dropdown_items = []
+        self.hovered_item = -1  # Index of currently hovered dropdown item
 
     def get_current_civ_id(self, civs: List) -> Optional[int]:
         if not civs:
@@ -1074,7 +1303,7 @@ class InfoPanel:
         return civs[self.current_civ_index].id
 
     def draw(self, surface: pygame.Surface, world_state: WorldState, civs: List,
-             cultures: List, religions: List):
+             cultures: List, religions: List, engine_civs: List = None):
         if not self.expanded:
             pygame.draw.rect(surface, (30, 30, 40), self.collapsed_rect)
             pygame.draw.rect(surface, (60, 60, 80), self.collapsed_rect, 2)
@@ -1097,13 +1326,8 @@ class InfoPanel:
         x_txt = self.font_small.render("X", True, (220, 220, 220))
         surface.blit(x_txt, (self.close_rect.x + 6, self.close_rect.y + 2))
 
-        # Change civ button
-        self.change_civ_rect = pygame.Rect(
-            self.expanded_rect.x + 10, self.expanded_rect.y + 10, 100, 25
-        )
-        pygame.draw.rect(surface, (50, 50, 70), self.change_civ_rect)
-        btn_txt = self.font_small.render("Change Civ", True, (200, 200, 200))
-        surface.blit(btn_txt, btn_txt.get_rect(center=self.change_civ_rect.center))
+        # Civ selector dropdown
+        self._draw_civ_dropdown(surface, civs, self.expanded_rect.x + 10, self.expanded_rect.y + 10)
 
         civ = None
         if civs:
@@ -1111,11 +1335,21 @@ class InfoPanel:
             civ = civs[self.current_civ_index]
 
         x = self.expanded_rect.x + 10
-        y = self.change_civ_rect.bottom + 10
+        y = self.expanded_rect.y + 50  # After dropdown + some padding
         if civ:
+            # Get culture name from engine civ first (most accurate), then GUI civ
             culture_name = "Unknown"
-            if 0 <= civ.culture_id < len(cultures):
+            engine_civ = None
+            if engine_civs:
+                engine_civ = next((ec for ec in engine_civs if ec.civ_id == civ.id), None)
+                
+            if engine_civ and hasattr(engine_civ, 'main_culture') and engine_civ.main_culture:
+                culture_name = engine_civ.main_culture
+            elif hasattr(civ, 'main_culture') and civ.main_culture:
+                culture_name = civ.main_culture
+            elif hasattr(civ, 'culture_id') and 0 <= civ.culture_id < len(cultures):
                 culture_name = cultures[civ.culture_id].name
+                
             religion_name = "Unknown"
             if 0 <= civ.religion_id < len(religions):
                 religion_name = religions[civ.religion_id].name
@@ -1137,6 +1371,46 @@ class InfoPanel:
     def _draw_text(self, surface: pygame.Surface, text: str, x: int, y: int):
         surface.blit(self.font_normal.render(text, True, (200, 200, 200)), (x, y))
 
+    def _draw_civ_dropdown(self, surface: pygame.Surface, civs: List, x: int, y: int):
+        """Draw civilization selector dropdown."""
+        if not civs:
+            return
+            
+        # Dropdown button
+        dropdown_width = 150
+        dropdown_height = 25
+        
+        self.dropdown_rect = pygame.Rect(x, y, dropdown_width, dropdown_height)
+        
+        # Current selection
+        current_civ_name = civs[self.current_civ_index % len(civs)].name if civs else "No Civ Selected"
+        
+        # Draw main dropdown button
+        button_color = (60, 60, 80) if not self.dropdown_open else (80, 80, 100)
+        pygame.draw.rect(surface, button_color, self.dropdown_rect)
+        pygame.draw.rect(surface, (100, 100, 120), self.dropdown_rect, 1)
+        
+        # Dropdown text
+        text_surface = self.font_small.render(current_civ_name, True, (255, 255, 255))
+        text_rect = text_surface.get_rect(center=self.dropdown_rect.center)
+        surface.blit(text_surface, text_rect)
+        
+        # Dropdown arrow
+        arrow_x = x + dropdown_width - 15
+        arrow_y = y + dropdown_height // 2
+        arrow_points = [
+            (arrow_x, arrow_y - 3),
+            (arrow_x + 6, arrow_y + 3),
+            (arrow_x - 6, arrow_y + 3)
+        ]
+        pygame.draw.polygon(surface, (200, 200, 200), arrow_points)
+        
+        # Store dropdown info for later rendering (don't draw list here)
+        if self.dropdown_open and civs:
+            self.dropdown_items = civs
+        else:
+            self.dropdown_items = []
+
     def handle_click(self, mouse_x: int, mouse_y: int, civs: List) -> bool:
         if not self.expanded:
             if self.collapsed_rect.collidepoint(mouse_x, mouse_y):
@@ -1147,13 +1421,102 @@ class InfoPanel:
         if self.close_rect.collidepoint(mouse_x, mouse_y):
             self.expanded = False
             return True
-        if self.change_civ_rect.collidepoint(mouse_x, mouse_y):
-            if civs:
-                self.current_civ_index = (self.current_civ_index + 1) % len(civs)
+            
+        # Handle dropdown clicks - check list items first
+        if self.dropdown_open and civs:
+            # Calculate dropdown list position (same as in render_dropdown_overlay)
+            dropdown_width = 150
+            dropdown_height = 25
+            dropdown_x = self.expanded_rect.x + 10
+            dropdown_y = self.expanded_rect.y + 10 + dropdown_height
+            list_height = min(len(civs) * 25, 125)  # Max 5 items visible
+            dropdown_list_rect = pygame.Rect(dropdown_x, dropdown_y, dropdown_width, list_height)
+            
+            # First check if clicking on dropdown list items (highest priority)
+            if dropdown_list_rect.collidepoint(mouse_x, mouse_y):
+                # Calculate which item was clicked
+                relative_y = mouse_y - dropdown_y
+                item_index = relative_y // 25
+                if 0 <= item_index < len(civs):
+                    self.current_civ_index = item_index
+                    self.dropdown_open = False
+                    return True
+            # Then check if clicking dropdown button while open
+            elif civs and self.dropdown_rect.collidepoint(mouse_x, mouse_y):
+                # Clicked dropdown button while open - close it
+                self.dropdown_open = False
+                return True
+            else:
+                # Click outside dropdown closes it
+                self.dropdown_open = False
+                return True
+        elif civs and self.dropdown_rect.collidepoint(mouse_x, mouse_y):
+            # Open dropdown (only if not currently open)
+            self.dropdown_open = True
             return True
         if self.expanded_rect.collidepoint(mouse_x, mouse_y):
             return True
         return False
+    
+    def render_dropdown_overlay(self, screen: pygame.Surface):
+        """Render dropdown list on top of everything else."""
+        if not self.expanded or not self.dropdown_open or not self.dropdown_items:
+            return
+            
+        # Dropdown position (same as in _draw_civ_dropdown)
+        dropdown_width = 150
+        dropdown_height = 25
+        dropdown_x = self.expanded_rect.x + 10
+        dropdown_y = self.expanded_rect.y + 10 + dropdown_height
+        
+        # List dimensions
+        list_height = min(len(self.dropdown_items) * 25, 125)  # Max 5 items visible
+        list_rect = pygame.Rect(dropdown_x, dropdown_y, dropdown_width, list_height)
+        
+        # Background
+        pygame.draw.rect(screen, (40, 40, 50), list_rect)
+        pygame.draw.rect(screen, (100, 100, 120), list_rect, 1)
+        
+        # Items
+        for i, civ in enumerate(self.dropdown_items):
+            if i * 25 >= list_height:
+                break
+                
+            item_y = dropdown_y + i * 25
+            item_rect = pygame.Rect(dropdown_x, item_y, dropdown_width, 25)
+            
+            # Highlight current selection or hovered item
+            if i == self.current_civ_index % len(self.dropdown_items):
+                pygame.draw.rect(screen, (80, 100, 80), item_rect)
+            elif i == self.hovered_item:
+                # Glow effect for hovered item
+                pygame.draw.rect(screen, (120, 120, 160), item_rect)  # Light blue glow
+                pygame.draw.rect(screen, (160, 160, 200), item_rect, 2)  # Brighter border
+                
+            # Item text
+            text_color = (255, 255, 255) if i != self.hovered_item else (255, 255, 200)  # Slightly yellow when hovered
+            item_text = self.font_small.render(civ.name, True, text_color)
+            item_text_rect = item_text.get_rect(center=item_rect.center)
+            screen.blit(item_text, item_text_rect)
+            
+        # Update screen rect for click detection
+        self.dropdown_screen_rect = list_rect
+    
+    def update_hover(self, mouse_x: int, mouse_y: int):
+        """Update which dropdown item is being hovered."""
+        if self.expanded and self.dropdown_open and self.dropdown_items:
+            if hasattr(self, 'dropdown_screen_rect') and self.dropdown_screen_rect.collidepoint(mouse_x, mouse_y):
+                # Calculate which item is hovered
+                relative_y = mouse_y - self.dropdown_screen_rect.y
+                item_index = relative_y // 25
+                if 0 <= item_index < len(self.dropdown_items):
+                    self.hovered_item = item_index
+                else:
+                    self.hovered_item = -1
+            else:
+                self.hovered_item = -1
+        else:
+            self.hovered_item = -1
 
 
 class ControlPanel:
@@ -1165,7 +1528,7 @@ class ControlPanel:
         self.game_speed = 1
         self.view_mode = ViewMode.POLITICAL
 
-    def draw(self, surface: pygame.Surface, world_state=None):
+    def draw(self, surface: pygame.Surface, world_state=None, civs=None):
         panel_y = surface.get_height() - self.height
         panel_rect = pygame.Rect(0, panel_y, surface.get_width(), self.height)
         pygame.draw.rect(surface, (30, 30, 40), panel_rect)
@@ -1222,6 +1585,7 @@ class ControlPanel:
                 pygame.draw.rect(surface, color, scale_rect)
                 txt = self.font.render(label, True, (255, 255, 255))
                 surface.blit(txt, txt.get_rect(center=scale_rect.center))
+            x_offset += 200
 
         # Help  
         help_texts = [
@@ -1232,7 +1596,7 @@ class ControlPanel:
             t = self.font.render(msg, True, (150, 150, 150))
             surface.blit(t, (surface.get_width() - 480, panel_y + 10 + i * 20))
 
-    def handle_click(self, mouse_x: int, mouse_y: int, screen_height: int, world_state=None) -> str:
+    def handle_click(self, mouse_x: int, mouse_y: int, screen_height: int, world_state=None, civs=None) -> str:
         if mouse_y < screen_height - self.height:
             return ""
         y_center = screen_height - self.height // 2
@@ -1314,14 +1678,47 @@ class GodsimGUI:
         else:
             num_civs = self.world_state.owner_map.max() + 1
             if num_civs > 0:
+                # For existing civs, we need to generate them properly with culture names
                 colors = make_palette(num_civs)
+                
+                # Find existing civ capitals
+                civ_capitals = {}
+                for r in range(self.world_state.height):
+                    for c in range(self.world_state.width):
+                        owner = self.world_state.owner_map[r, c]
+                        if owner >= 0 and owner not in civ_capitals:
+                            civ_capitals[owner] = (r, c)
+                
+                # Create name generator for consistent naming
+                from name_generator import NameGenerator
+                name_gen = NameGenerator(self.world_state.seed + 2000)
+                
                 for i in range(num_civs):
+                    # Get culture info from the tile where this civ's capital is
+                    culture_name = "Unknown Culture"
+                    linguistic_type = "latin"
+                    
+                    if i in civ_capitals:
+                        r, c = civ_capitals[i]
+                        if hasattr(self.world_state, 'culture_map') and self.world_state.culture_map is not None:
+                            culture_id = self.world_state.culture_map[r, c]
+                            if culture_id >= 0 and culture_id < len(self.cultures):
+                                culture_name = self.cultures[culture_id].name
+                                if hasattr(self.cultures[culture_id], 'linguistic_type'):
+                                    linguistic_type = self.cultures[culture_id].linguistic_type
+                    
+                    # Generate civ name using the culture's linguistic type
+                    civ_name = name_gen.generate_country_name(style=linguistic_type)
+                    
                     from sim.civilization import Civilization
                     self.civs.append(Civilization(
                         id=i,
-                        name=f"Civ {chr(65 + i)}" if i < 26 else f"Civ {i}",
+                        name=civ_name,
                         color=colors[i],
-                        rng_seed=self.world_state.seed ^ (i * 9973 + 12345)
+                        rng_seed=self.world_state.seed ^ (i * 9973 + 12345),
+                        capital=civ_capitals.get(i),
+                        culture_id=self.world_state.culture_map[civ_capitals[i]] if i in civ_capitals and hasattr(self.world_state, 'culture_map') else -1,
+                        religion_id=self.world_state.religion_map[civ_capitals[i]] if i in civ_capitals and hasattr(self.world_state, 'religion_map') else -1
                     ))
 
         # Engine with military features
@@ -1380,8 +1777,29 @@ class GodsimGUI:
         eng = SimulationEngine(width=ws.width, height=ws.height, seed=ws.seed)
         # Create civs in the engine mirroring GUI civs
         for civ in self.civs:
-            eng.world.civs[civ.id] = Civ(civ_id=civ.id, name=civ.name,
-                                         stock_food=100, tiles=[])
+            # Get the culture name from the culture at the civ's capital
+            main_culture = "Unknown Culture"
+            linguistic_type = "latin"
+            
+            if civ.capital and hasattr(self.world_state, 'culture_map') and self.world_state.culture_map is not None:
+                r, c = civ.capital
+                culture_id = self.world_state.culture_map[r, c]
+                if culture_id >= 0 and culture_id < len(self.cultures):
+                    main_culture = self.cultures[culture_id].name
+                    if hasattr(self.cultures[culture_id], 'linguistic_type'):
+                        linguistic_type = self.cultures[culture_id].linguistic_type
+            
+            eng.world.civs[civ.id] = Civ(
+                civ_id=civ.id, 
+                name=civ.name,
+                stock_food=100, 
+                tiles=[],
+                main_culture=main_culture,
+                linguistic_type=linguistic_type
+            )
+            # Initialize tech system for this civilization
+            if hasattr(eng, 'tech_system') and eng.tech_system:
+                eng.tech_system.initialize_civ(civ.id)
         # Populate tiles
         for t in eng.world.tiles:
             t.height = float(ws.height_map[t.r, t.q])
@@ -1544,7 +1962,7 @@ class GodsimGUI:
                 # --- Tech hotkey: open/close tree for selected civ (if tech available) ---
                 elif _TECH_AVAILABLE and TechHotkeys.handle_keypress(
                         event, self.tech_window,
-                        self.info_panel.get_current_civ_id(self.civs)):
+                        self.civs[0].id if self.civs else None):
                     pass
                 # Spawn army with 'A'
                 elif event.key == pygame.K_a:
@@ -1587,7 +2005,8 @@ class GodsimGUI:
                 events_handled = True
                 if event.button == 1:
                     # Tech window close click
-                    if self.tech_window.handle_click(event.pos[0], event.pos[1], self.screen.get_size()):
+                    civ_name_map = {civ.id: civ.name for civ in self.civs}
+                    if self.tech_window.handle_click(event.pos[0], event.pos[1], self.screen.get_size(), civ_name_map):
                         continue
                     # Hex popup close
                     if self.hex_popup and self.hex_popup.visible:
@@ -1596,7 +2015,7 @@ class GodsimGUI:
                     # Panels
                     if self.info_panel.handle_click(event.pos[0], event.pos[1], self.civs):
                         continue
-                    action = self.control_panel.handle_click(event.pos[0], event.pos[1], self.screen.get_height(), self.world_state)
+                    action = self.control_panel.handle_click(event.pos[0], event.pos[1], self.screen.get_height(), self.world_state, self.civs)
                     if action:
                         continue
                     # Select hex / start drag
@@ -1629,25 +2048,31 @@ class GodsimGUI:
                                 break
 
                 elif event.button == 4:  # wheel up
-                    # Use smaller zoom steps for smoother zooming
-                    # Use map surface dimensions for zoom focus point
-                    render_width = self.screen.get_width()
-                    render_height = self.screen.get_height() - self.control_panel.height
-                    
-                    # Only zoom if mouse is over map area
-                    if event.pos[1] < render_height and event.pos[0] < render_width:
-                        self.camera.zoom_at(0.1, event.pos[0], event.pos[1], render_width, render_height)
-                    self.tech_window.handle_scroll(1)
+                    # Check if scrolling tech window first
+                    if self.tech_window.visible and self._mouse_over_tech_window(event.pos[0], event.pos[1]):
+                        self.tech_window.handle_scroll(1)
+                    else:
+                        # Use smaller zoom steps for smoother zooming
+                        # Use map surface dimensions for zoom focus point
+                        render_width = self.screen.get_width()
+                        render_height = self.screen.get_height() - self.control_panel.height
+                        
+                        # Only zoom if mouse is over map area
+                        if event.pos[1] < render_height and event.pos[0] < render_width:
+                            self.camera.zoom_at(0.1, event.pos[0], event.pos[1], render_width, render_height)
                 elif event.button == 5:  # wheel down
-                    # Use smaller zoom steps for smoother zooming
-                    # Use map surface dimensions for zoom focus point
-                    render_width = self.screen.get_width()
-                    render_height = self.screen.get_height() - self.control_panel.height
-                    
-                    # Only zoom if mouse is over map area
-                    if event.pos[1] < render_height and event.pos[0] < render_width:
-                        self.camera.zoom_at(-0.1, event.pos[0], event.pos[1], render_width, render_height)
-                    self.tech_window.handle_scroll(-1)
+                    # Check if scrolling tech window first  
+                    if self.tech_window.visible and self._mouse_over_tech_window(event.pos[0], event.pos[1]):
+                        self.tech_window.handle_scroll(-1)
+                    else:
+                        # Use smaller zoom steps for smoother zooming
+                        # Use map surface dimensions for zoom focus point
+                        render_width = self.screen.get_width()
+                        render_height = self.screen.get_height() - self.control_panel.height
+                        
+                        # Only zoom if mouse is over map area
+                        if event.pos[1] < render_height and event.pos[0] < render_width:
+                            self.camera.zoom_at(-0.1, event.pos[0], event.pos[1], render_width, render_height)
                 elif event.button == 3 and self.selected_army is not None:
                     render_width = self.screen.get_width()
                     render_height = self.screen.get_height() - self.control_panel.height
@@ -1684,8 +2109,26 @@ class GodsimGUI:
                             render_width, render_height
                         )
                         self.hex_renderer.hovered_hex = self.hex_renderer.get_hex_at_point(wx, wy)
+                
+                # Update dropdown hover effects
+                self.info_panel.update_hover(event.pos[0], event.pos[1])
+                if _TECH_AVAILABLE:
+                    self.tech_window.update_hover(event.pos[0], event.pos[1])
         
         return events_handled
+
+    def _mouse_over_tech_window(self, mouse_x: int, mouse_y: int) -> bool:
+        """Check if mouse is over the tech tree window."""
+        if not self.tech_window.visible:
+            return False
+        
+        # Calculate window position (same logic as in tech window draw)
+        screen_w, screen_h = self.screen.get_size()
+        x = (screen_w - self.tech_window.width) // 2
+        y = (screen_h - self.tech_window.height) // 2
+        
+        return (x <= mouse_x <= x + self.tech_window.width and 
+                y <= mouse_y <= y + self.tech_window.height)
 
     def update(self):
         # Sync pause
@@ -1759,24 +2202,16 @@ class GodsimGUI:
         self.screen.blit(map_surface, (0, 0))
 
         # Panels
-        self.info_panel.draw(self.screen, self.world_state, self.civs, self.cultures, self.religions)
-        self.control_panel.draw(self.screen, self.world_state)
+        # Pass both GUI civs and engine civs for culture info
+        engine_civs = list(self.engine.world.civs.values()) if hasattr(self, 'engine') and self.engine else []
+        self.info_panel.draw(self.screen, self.world_state, self.civs, self.cultures, self.religions, engine_civs)
+        self.control_panel.draw(self.screen, self.world_state, self.civs)
 
         # Hex popup
         if self.hex_popup:
             self.hex_popup.draw(self.screen, self.world_state, self.civs, self.feature_map)
 
-        # Age indicators (top-left column) if tech is available
-        if _TECH_AVAILABLE and self.tech_system is not None and self.civs:
-            y_off = 80
-            for civ in self.civs[:5]:
-                state = getattr(self.tech_system, "civ_states", {}).get(civ.id)
-                if state:
-                    self.age_indicator.draw(self.screen, 10, y_off,
-                                            civ.name,
-                                            getattr(state, "current_age", Age.DISSEMINATION),
-                                            len(getattr(state, "researched_techs", [])))
-                    y_off += 30
+        # Age indicators removed - use civ selector instead
 
         # Tech tree window (centered)
         if _TECH_AVAILABLE:
@@ -1798,6 +2233,24 @@ class GodsimGUI:
                     f"tgt:{self.selected_army.target}")
             info_text = pygame.font.Font(None, 20).render(info, True, (200, 200, 200))
             self.screen.blit(info_text, (10, 30))
+
+        # Date display (bottom left, above control panel)
+        month, day, year = self.world_state.get_date_tuple()
+        date_string = f"{month:02d}/{day:02d}/{year}"
+        date_font = pygame.font.Font(None, 24)
+        date_text = date_font.render(date_string, True, (220, 220, 220))
+        date_y = self.screen.get_height() - self.control_panel.height - 30
+        self.screen.blit(date_text, (10, date_y))
+
+        # Update hover states and render dropdown overlays on top of everything else
+        mouse_x, mouse_y = pygame.mouse.get_pos()
+        self.info_panel.update_hover(mouse_x, mouse_y)
+        if _TECH_AVAILABLE:
+            self.tech_window.update_hover(mouse_x, mouse_y)
+            
+        self.info_panel.render_dropdown_overlay(self.screen)
+        if _TECH_AVAILABLE:
+            self.tech_window.render_dropdown_overlay(self.screen)
 
         pygame.display.flip()
 
@@ -1839,13 +2292,18 @@ class GodsimGUI:
             events_handled = self.handle_events()
             simulation_updated = self.update()
             
-            # Only render if something changed or we're not paused
-            if self.needs_redraw or not self.control_panel.paused or events_handled or simulation_updated:
+            # Optimized rendering: only render when necessary
+            should_render = (self.needs_redraw or 
+                           events_handled or 
+                           simulation_updated or
+                           (not self.control_panel.paused))  # Always render when not paused for smooth animation
+            
+            if should_render:
                 self.render()
                 self.needs_redraw = False
             
-            # Reduce FPS when paused to save CPU
-            target_fps = 15 if self.control_panel.paused else 60
+            # Maintain 60 FPS even when paused for smooth UI interaction
+            target_fps = 60
             self.clock.tick(target_fps)
         pygame.quit()
 
@@ -1875,7 +2333,7 @@ def main():
         )
         biomes = build_biomes(height, sea, 0.8)
         world_state = from_worldgen(height, biomes, sea, args.width, args.height, 12.0, seed)
-        world_state, _ = initialize_civs(world_state, n_civs=args.civs, base_pop=50.0, seed=seed + 1000)
+        # Don't initialize civs here - let GodsimGUI do it properly with cultures
 
     gui = GodsimGUI(world_state=world_state)
     gui.run()
