@@ -3,6 +3,8 @@ Colonization & Migration tuning knobs.
 Safe to tweak without touching system code.
 """
 
+from modifiers import MODIFIERS
+
 # Global pace multiplier: 0.5 = slower, 2.0 = faster
 PACE_MULTIPLIER: float = 1.0
 
@@ -18,8 +20,8 @@ COLONIZE_SOURCE_MIN_POP: int = 60
 COLONIZE_COLONY_SEED: int = 15
 
 # Carrying capacity
-CARRYING_CAP_PER_FOOD: float = 100.0
-MIN_FOOD_EPS: float = 1e-6  # avoid div-by-zero on barren tiles
+CARRYING_CAP_PER_FOOD: float = MODIFIERS.carrying_capacity_per_food
+MIN_FOOD_EPS: float = MODIFIERS.min_food_eps  # avoid div-by-zero on barren tiles
 
 # Trade routes
 TRADE_ROUTE_MIN_DIST: int = 5

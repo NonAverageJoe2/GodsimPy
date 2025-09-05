@@ -20,6 +20,7 @@ import math
 import numpy as np
 
 import config_colonization as C
+from modifiers import MODIFIERS
 
 
 # ----------- Strategy Enum ----------------------------------------------------
@@ -127,7 +128,10 @@ class EnhancedColonizationSystem:
         pop = float(getattr(t, "_pop_float", getattr(t, "pop", 0.0)))
 
         food, prod = _yields_for(t)
-        cap_per_food = max(C.MIN_FOOD_EPS, C.CARRYING_CAP_PER_FOOD * max(food, 0.0))
+        cap_per_food = max(
+            MODIFIERS.min_food_eps,
+            MODIFIERS.carrying_capacity_per_food * max(food, 0.0),
+        )
         crowding = pop / cap_per_food
 
         # Push factors (crowding)
