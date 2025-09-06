@@ -109,6 +109,7 @@ class Civ:
     armies: List["Army"] = field(default_factory=list)
     manpower_used: int = 0
     manpower_limit: int = 0
+    capital: Optional[Coord] = None
 
     # --- Culture and naming ---
     main_culture: Optional[str] = "Unknown Culture"  # Name of the main culture
@@ -433,11 +434,18 @@ class SimulationEngine:
             max_food = max(1000, len(w.civs[cid].tiles) * 200)
             civ.stock_food = max(0, min(civ.stock_food + int(g), max_food))
 
+        # Clean up any tiles that lost all population and redistribute people
+        self._remove_depopulated_tiles()
+        self._redistribute_population()
+
         # --- Periodic colonization with tech expansion modifier ----------------
         w.colonize_elapsed += dt
         if w.colonize_elapsed >= w.colonize_period_years:
             self._colonization_pass_with_tech()
             w.colonize_elapsed %= w.colonize_period_years
+            # Move people into newly settled tiles and drop empty ones
+            self._redistribute_population()
+            self._remove_depopulated_tiles()
 
         # --- Army movement/combat with tech modifiers --------------------------
         self._advance_armies_with_tech(dt)
@@ -506,6 +514,49 @@ class SimulationEngine:
             dst.pop = SETTLER_COST
             dst._pop_float = float(dst.pop)
             civ.tiles.append((dq, dr))
+
+    def _remove_depopulated_tiles(self) -> None:
+        """Release ownership of tiles whose population has dropped to zero."""
+        w = self.world
+        for cid, civ in w.civs.items():
+            to_remove: List[Coord] = []
+            for q, r in list(civ.tiles):
+                tile = w.get_tile(q, r)
+                if tile.owner == cid and tile.pop <= 0:
+                    tile.owner = None
+                    to_remove.append((q, r))
+            for coord in to_remove:
+                civ.tiles.remove(coord)
+
+    def _redistribute_population(self) -> None:
+        """Move population from the capital to sparse tiles while keeping capital largest."""
+        w = self.world
+        for cid, civ in w.civs.items():
+            if not civ.tiles:
+                continue
+            capital_coord = civ.capital
+            if capital_coord is None or capital_coord not in civ.tiles:
+                capital_coord = civ.tiles[0]
+                civ.capital = capital_coord
+            capital_tile = w.get_tile(*capital_coord)
+
+            for q, r in civ.tiles:
+                if (q, r) == capital_coord:
+                    continue
+                tile = w.get_tile(q, r)
+                if tile.pop < 5 and capital_tile.pop > tile.pop + 1:
+                    tile.pop += 1
+                    capital_tile.pop -= 1
+
+            for q, r in civ.tiles:
+                if (q, r) == capital_coord:
+                    continue
+                tile = w.get_tile(q, r)
+                if tile.pop > capital_tile.pop:
+                    diff = tile.pop - capital_tile.pop
+                    transfer = diff // 2 + 1
+                    tile.pop -= transfer
+                    capital_tile.pop += transfer
 
     def _advance_armies_with_tech(self, dt: float) -> None:
         w = self.world

@@ -1799,12 +1799,13 @@ class GodsimGUI:
                         linguistic_type = self.cultures[culture_id].linguistic_type
             
             eng.world.civs[civ.id] = Civ(
-                civ_id=civ.id, 
+                civ_id=civ.id,
                 name=civ.name,
-                stock_food=100, 
+                stock_food=100,
                 tiles=[],
                 main_culture=main_culture,
-                linguistic_type=linguistic_type
+                linguistic_type=linguistic_type,
+                capital=civ.capital
             )
             # Initialize tech system for this civilization
             if hasattr(eng, 'tech_system') and eng.tech_system:
