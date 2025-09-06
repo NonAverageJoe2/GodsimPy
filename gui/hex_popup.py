@@ -134,13 +134,21 @@ class HexPopup:
         self._draw_section(popup_surface, "TERRAIN", y_offset)
         y_offset += 22
         
-        # Biome
+        # Biome - updated to match all biomes in worldgen/biomes.py
         biome_names = {
             0: ("Grassland", (34, 139, 34)),
             1: ("Coast", (238, 203, 173)),
             2: ("Mountain", (139, 137, 137)),
             3: ("Ocean", (0, 119, 190)),
-            4: ("Desert", (238, 203, 173))
+            4: ("Desert", (238, 203, 173)),
+            5: ("Tundra", (173, 216, 230)),
+            6: ("Glacier", (240, 248, 255)),
+            7: ("Marsh", (107, 142, 35)),
+            8: ("Steppe", (189, 183, 107)),
+            9: ("Savanna", (255, 228, 181)),
+            10: ("Taiga", (85, 107, 47)),
+            11: ("Temperate Forest", (34, 139, 34)),
+            12: ("Tropical Forest", (46, 139, 87))
         }
         biome = world_state.biome_map[r, q]
         biome_name, biome_color = biome_names.get(biome, ("Unknown", (100, 100, 100)))
@@ -197,7 +205,8 @@ class HexPopup:
         y_offset += 22
         
         pop = world_state.pop_map[r, q]
-        self._draw_text(popup_surface, f"Current: {int(pop)} people", self.padding + 5, y_offset)
+        display_pop = int(pop * 500)  # Inflate population x500 for display
+        self._draw_text(popup_surface, f"Current: {display_pop:,} people", self.padding + 5, y_offset)
         y_offset += 18
         
         # Calculate carrying capacity (cache yields calculation)
@@ -210,7 +219,8 @@ class HexPopup:
         yields = self._cached_yields
         K = carrying_capacity(yields["food"])
         capacity = K[r, q]
-        self._draw_text(popup_surface, f"Capacity: {int(capacity)} people", 
+        display_capacity = int(capacity * 500)  # Inflate capacity x500 for display
+        self._draw_text(popup_surface, f"Capacity: {display_capacity:,} people", 
                        self.padding + 5, y_offset)
         y_offset += 18
         

@@ -86,6 +86,90 @@ def _initialize_settlements(engine) -> None:
             )
 
 
+def _apply_population_redistribution(world, dt: float) -> None:
+    """Apply population movement and redistribution within civilizations."""
+    try:
+        import numpy as np
+        
+        # Skip if no tiles or civs
+        if not world.tiles or not world.civs:
+            return
+        
+        # Convert world tiles to numpy arrays for processing
+        pop_map = np.zeros((world.height_hex, world.width_hex), dtype=np.float32)
+        owner_map = np.full((world.height_hex, world.width_hex), -1, dtype=np.int32)
+        food_map = np.zeros((world.height_hex, world.width_hex), dtype=np.float32)
+        settlement_map = np.zeros((world.height_hex, world.width_hex), dtype=np.uint8)
+        
+        # Fill arrays with world data
+        for tile in world.tiles:
+            try:
+                pop_map[tile.r, tile.q] = float(tile.pop)
+                owner_map[tile.r, tile.q] = tile.owner if tile.owner is not None else -1
+                
+                # Get food yield (simplified)
+                from sim.resources import yields_for
+                food_yield, _ = yields_for(tile)
+                food_map[tile.r, tile.q] = food_yield
+                
+                # Determine settlement type (simplified)
+                settlement_type = 0  # hamlet by default
+                if hasattr(tile, 'settlement_type'):
+                    settlement_type = tile.settlement_type
+                elif tile.owner is not None:
+                    # Check if it's a capital or major settlement based on population
+                    if tile.pop >= 200:
+                        settlement_type = 4  # capital
+                    elif tile.pop >= 100:
+                        settlement_type = 3  # city
+                    elif tile.pop >= 50:
+                        settlement_type = 2  # town
+                    elif tile.pop >= 25:
+                        settlement_type = 1  # village
+                settlement_map[tile.r, tile.q] = settlement_type
+            except Exception as e:
+                # Skip problematic tiles
+                continue
+        
+        # Apply frontier migration
+        from sim.settlements import apply_frontier_migration
+        rng = np.random.default_rng()
+        new_pop_map = apply_frontier_migration(pop_map, settlement_map, owner_map, food_map, dt, rng)
+        
+        # Apply regional balance every few steps
+        balance_applied = False
+        if world.turn % 3 == 0:
+            from sim.settlements import apply_regional_balance
+            new_pop_map = apply_regional_balance(new_pop_map, owner_map, dt, rng)
+            balance_applied = True
+        
+        # Update world tiles with new populations and track changes
+        changes_count = 0
+        total_migration = 0.0
+        for tile in world.tiles:
+            try:
+                old_pop = tile.pop
+                new_pop = float(new_pop_map[tile.r, tile.q])
+                if abs(new_pop - old_pop) > 0.1:  # Only update if significant change
+                    from fixes.population_fixes import safe_update_population
+                    safe_update_population(tile, new_pop)
+                    changes_count += 1
+                    total_migration += abs(new_pop - old_pop)
+            except Exception as e:
+                # Skip problematic tiles
+                continue
+        
+        # Debug output (every 10 turns to avoid spam)
+        if world.turn % 10 == 0 and changes_count > 0:
+            print(f"[Turn {world.turn}] Population redistribution: {changes_count} tiles changed, "
+                  f"{total_migration:.1f} total migration{', balance applied' if balance_applied else ''}")
+    
+    except Exception as e:
+        # If any error occurs, just skip population redistribution for this turn
+        print(f"Population redistribution error (turn {world.turn}): {e}")
+        return
+
+
 def _patch_advance_turn(engine) -> None:
     """Replace advance_turn with integrated version."""
     original_advance_turn = engine.advance_turn
@@ -133,6 +217,9 @@ def _patch_advance_turn(engine) -> None:
         for tile in engine.world.tiles:
             new_pop = new_pop_map[tile.r, tile.q]
             safe_update_population(tile, new_pop)
+        
+        # 8.5. Apply population movement and redistribution (disabled for debugging)
+        # _apply_population_redistribution(engine.world, dt)
         
         # 9. Update manpower limits based on actual cohorts
         for civ_id, civ in engine.world.civs.items():
