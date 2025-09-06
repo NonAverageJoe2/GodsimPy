@@ -10,6 +10,8 @@ from .colonization_enhanced import (
     integrate_enhanced_colonization,
     determine_colonization_strategy,
 )
+from .path_network import PathNetwork
+
 
 __all__ = [
     "config_colonization",
@@ -17,4 +19,5 @@ __all__ = [
     "ColonizationStrategy",
     "integrate_enhanced_colonization",
     "determine_colonization_strategy",
+    "PathNetwork",
 ]
