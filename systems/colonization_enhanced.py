@@ -19,7 +19,7 @@ import random
 import math
 import numpy as np
 
-import config_colonization as C
+from . import config_colonization as C
 from modifiers import MODIFIERS
 
 
