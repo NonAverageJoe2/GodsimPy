@@ -166,29 +166,38 @@ def advance_turn(
     # Apply regional population balance (gentle diffusion every few turns)
     if ws.turn % 3 == 0:  # Every 3 turns to avoid too much churn
         P_next = apply_regional_balance(P_next, ws.owner_map, dt_years, rng)
-    
-    # Check for settlement upgrades and new settlement creation
-    unique_civs = np.unique(ws.owner_map[ws.owner_map >= 0])
-    for civ_id in unique_civs:
-        # Try to upgrade existing hamlets to settlements
-        upgrades = get_settlement_upgrade_candidate(
-            ws.settlement_map, P_next, ws.owner_map, ws.biome_map, 
-            ws.height_map, food, int(civ_id), rng
-        )
-        for r, c, new_type in upgrades:
-            # Only upgrade if random chance succeeds (makes it gradual)
-            if rng.random() < 0.7:  # 70% chance per turn when conditions are met
-                ws.settlement_map[r, c] = np.uint8(new_type)
-        
-        # Also look for good settlement locations that should be prioritized
-        from .settlements import promote_best_hamlet_locations
-        promoted = promote_best_hamlet_locations(
-            ws.settlement_map, P_next, ws.owner_map, ws.biome_map, 
-            ws.height_map, food, int(civ_id), rng
-        )
-        for r, c in promoted:
-            if rng.random() < 0.5:  # 50% chance for direct promotion
-                ws.settlement_map[r, c] = np.uint8(1)  # Promote to village
+    owner = ws.owner_map
+    h, w = owner.shape
+    pressure = np.divide(P_next, K, out=np.zeros_like(P_next), where=K > 0)
+    high_pressure_mask = (
+        (pressure >= pressure_threshold)
+        & (P_next >= (min_settle_pop + settler_cost))
+        & (owner >= 0)
+    )
+    expansion_candidates = np.argwhere(high_pressure_mask)
+    unique_civs = np.unique(owner[owner >= 0])
+    if not expansion_candidates.size:
+        # Check for settlement upgrades and new settlement creation only when expansion isn't possible
+        for civ_id in unique_civs:
+            # Try to upgrade existing hamlets to settlements
+            upgrades = get_settlement_upgrade_candidate(
+                ws.settlement_map, P_next, ws.owner_map, ws.biome_map,
+                ws.height_map, food, int(civ_id), rng
+            )
+            for r, c, new_type in upgrades:
+                # Only upgrade if random chance succeeds (makes it gradual)
+                if rng.random() < 0.7:  # 70% chance per turn when conditions are met
+                    ws.settlement_map[r, c] = np.uint8(new_type)
+
+            # Also look for good settlement locations that should be prioritized
+            from .settlements import promote_best_hamlet_locations
+            promoted = promote_best_hamlet_locations(
+                ws.settlement_map, P_next, ws.owner_map, ws.biome_map,
+                ws.height_map, food, int(civ_id), rng
+            )
+            for r, c in promoted:
+                if rng.random() < 0.8:  # Promote more aggressively
+                    ws.settlement_map[r, c] = np.uint8(1)  # Promote to village
     
     # Ensure capitals remain the most populated tile for each civilization
     for civ_id in unique_civs:
@@ -372,6 +381,9 @@ def advance_turn(
                 ws.settlement_map[ny, nx] = np.uint8(0)  # Start as hamlet anyway
         ws.owner_map = owner
         ws.pop_map = pop
+
+    # Ensure owned tiles never lose all population
+    ws.pop_map = np.where(ws.owner_map >= 0, np.maximum(ws.pop_map, 1.0), ws.pop_map)
     
     # Apply smart border filling every few turns to claim enclosed areas
     if ws.turn > 0 and ws.turn % 5 == 0:

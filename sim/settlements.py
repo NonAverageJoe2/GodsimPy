@@ -559,7 +559,8 @@ def promote_best_hamlet_locations(settlement_map: NDArray[np.uint8],
     
     # Sort by score and return best candidates
     candidates.sort(key=lambda x: x[2], reverse=True)
-    return [(r, c) for r, c, score in candidates[:2]]  # Return up to 2 best locations per civ
+    # Return up to 5 best locations per civ to encourage more settlements
+    return [(r, c) for r, c, score in candidates[:5]]
 
 
 def get_settlement_name(settlement_type: int) -> str:
