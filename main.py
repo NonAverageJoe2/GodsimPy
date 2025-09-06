@@ -1362,13 +1362,14 @@ class InfoPanel:
             if 0 <= civ.religion_id < len(religions):
                 religion_name = religions[civ.religion_id].name
             total_pop = int(world_state.pop_map[world_state.owner_map == civ.id].sum())
-            male = int(total_pop * 0.5)
-            female = total_pop - male
+            display_total_pop = total_pop * 500  # Inflate population x500 for display
+            male = int(display_total_pop * 0.5)
+            female = int(display_total_pop) - male
             self._draw_text(surface, f"Name: {civ.name}", x, y); y += 20
             self._draw_text(surface, f"Main Religion: {religion_name}", x, y); y += 20
             self._draw_text(surface, f"Main Culture: {culture_name}", x, y); y += 20
-            self._draw_text(surface, f"Male Pop: {male}", x, y); y += 20
-            self._draw_text(surface, f"Female Pop: {female}", x, y); y += 20
+            self._draw_text(surface, f"Male Pop: {male:,}", x, y); y += 20
+            self._draw_text(surface, f"Female Pop: {female:,}", x, y); y += 20
             gov = getattr(civ, "government", "Unknown")
             self._draw_text(surface, f"Government: {gov}", x, y); y += 20
             society = getattr(civ, "society", "Unknown")

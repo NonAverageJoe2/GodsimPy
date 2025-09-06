@@ -427,7 +427,8 @@ class EnhancedColonizationSystem:
             unclaimed = sum(1 for nq, nr in _neighbors6(self.world, q, r)
                             if (_safe_get_tile(self.world, nq, nr) is not None and
                                 getattr(_safe_get_tile(self.world, nq, nr), "owner", None) is None))
-            return base + unclaimed * 0.5
+            # Much higher bonus for unclaimed neighbors to prioritize rapid expansion
+            return base + unclaimed * 2.0  # Increased from 0.5 to 2.0
 
         if strategy == ColonizationStrategy.DEFENSIVE:
             owned = sum(1 for nq, nr in _neighbors6(self.world, q, r)
@@ -566,23 +567,31 @@ def determine_colonization_strategy(engine, civ_id: int) -> ColonizationStrategy
     owned = len(tiles)
     border = 0
     coastal = 0
+    total_unclaimed = 0
+    
+    # Count unclaimed neighbors and border pressure
     for q, r in tiles:
         for nq, nr in _neighbors6(engine.world, q, r):
             n = _safe_get_tile(engine.world, nq, nr)
             if n is None:
                 continue
-            if getattr(n, "owner", None) not in (None, civ_id):
+            owner = getattr(n, "owner", None)
+            if owner is None:
+                total_unclaimed += 1
+            elif owner != civ_id:
                 border += 1
                 break
             if getattr(n, "biome", None) == "ocean":
                 coastal += 1
-    if owned < 5:
+    
+    # Stay expansionist much longer if there's unclaimed land
+    if owned < 15 or total_unclaimed > owned * 0.5:  # Expanded from 5 to 15, or if lots of unclaimed land
         return ColonizationStrategy.EXPANSIONIST
-    if border > owned * 0.3:
+    if border > owned * 0.4:  # Increased threshold for defensive
         return ColonizationStrategy.DEFENSIVE
-    if coastal > owned * 0.2:
+    if coastal > owned * 0.3:  # Increased threshold for coastal
         return ColonizationStrategy.COASTAL
-    if owned > 15 and border > 5:
+    if owned > 25 and border > 8:  # Increased thresholds for aggressive
         return ColonizationStrategy.AGGRESSIVE
     return ColonizationStrategy.RESOURCE_FOCUSED
 
@@ -620,25 +629,52 @@ def integrate_enhanced_colonization(engine) -> None:
                 for sq, sr, dq, dr, moved in mlst:
                     print(f"[Migration] Civ {civ_id}: {moved:.0f} moved {sq},{sr} -> {dq},{dr}")
 
-        # Strategic colonization
+        # Strategic colonization - attempt multiple colonizations per civ per turn
         if hasattr(engine.world, "civs"):
             for civ_id in list(engine.world.civs.keys()):
                 strat = determine_colonization_strategy(engine, civ_id)
-                res = sys.strategic_colonization(civ_id, strat)
-                if not res:
-                    continue
-                (sq, sr), (dq, dr) = res
-                st = _safe_get_tile(engine.world, sq, sr)
-                tt = _safe_get_tile(engine.world, dq, dr)
-                if st is None or tt is None:
-                    continue
-                if int(getattr(st, "pop", 0)) >= C.COLONIZE_SOURCE_MIN_POP and getattr(tt, "owner", None) is None:
-                    st.pop = max(0, int(getattr(st, "pop", 0)) - C.COLONIZE_COLONY_SEED)
-                    tt.owner = civ_id
-                    tt.pop = max(0, int(getattr(tt, "pop", 0)) + C.COLONIZE_COLONY_SEED)
-                    civ = engine.world.civs[civ_id]
-                    if (dq, dr) not in getattr(civ, "tiles", []):
-                        civ.tiles.append((dq, dr))
+                
+                # Try multiple colonization attempts per turn for aggressive expansion
+                max_colonies_per_turn = 3 if strat == ColonizationStrategy.EXPANSIONIST else 1
+                colonies_created = 0
+                
+                for attempt in range(max_colonies_per_turn):
+                    res = sys.strategic_colonization(civ_id, strat)
+                    if not res:
+                        break  # No more valid colonization targets
+                        
+                    (sq, sr), (dq, dr) = res
+                    st = _safe_get_tile(engine.world, sq, sr)
+                    tt = _safe_get_tile(engine.world, dq, dr)
+                    if st is None or tt is None:
+                        continue
+                        
+                    if int(getattr(st, "pop", 0)) >= C.COLONIZE_SOURCE_MIN_POP and getattr(tt, "owner", None) is None:
+                        # Calculate smart colonization - keep capitals substantial but not overpopulated
+                        source_pop = int(getattr(st, "pop", 0))
+                        colony_size = C.COLONIZE_COLONY_SEED
+                        
+                        # If source is capital, only colonize if it has excess population
+                        is_capital = hasattr(civ, 'capital') and civ.capital == (sr, sq)
+                        if is_capital and source_pop > 120:  # Capital has excess population
+                            colony_size = min(colony_size, source_pop - 100)  # Keep at least 100 in capital
+                        elif is_capital:
+                            continue  # Don't drain capital below 120
+                        
+                        # Proceed with colonization
+                        st.pop = max(0, source_pop - colony_size)
+                        tt.owner = civ_id
+                        tt.pop = max(0, int(getattr(tt, "pop", 0)) + colony_size)
+                        civ = engine.world.civs[civ_id]
+                        if (dq, dr) not in getattr(civ, "tiles", []):
+                            civ.tiles.append((dq, dr))
+                        colonies_created += 1
+                        
+                        # Print expansion info occasionally
+                        if getattr(engine.world, "turn", 0) % 10 == 0:
+                            print(f"[Expansion] Civ {civ_id} colonized ({dq},{dr}) from ({sq},{sr}) with {colony_size} people")
+                    else:
+                        break  # Source doesn't have enough population
 
         # Cultural pressure
         flips = sys.apply_cultural_pressure(dt_years)

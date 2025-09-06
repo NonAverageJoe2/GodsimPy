@@ -6,7 +6,7 @@ from .resources import yields_with_features, carrying_capacity
 from .biome_mechanics import apply_biome_modifiers
 from .time import scale_to_years, step_date
 from .settlements import (
-    apply_urban_pressure, apply_growth_bonuses,
+    apply_urban_pressure, apply_frontier_migration, apply_regional_balance, apply_growth_bonuses,
     get_settlement_upgrade_candidate, enforce_settlement_population_hierarchy,
     get_evenq_hex_neighbors, SETTLEMENT_CONFIG
 )
@@ -22,9 +22,9 @@ def advance_turn(
     growth_variance: float | None = None,
     food_per_pop: float | None = None,
     disaster_rate: float | None = None,
-    min_settle_pop: float = 25.0,
-    settler_cost: float = 10.0,
-    pressure_threshold: float = 0.7,
+    min_settle_pop: float = 15.0,  # Reduced from 25 to encourage expansion
+    settler_cost: float = 8.0,     # Reduced from 10 to make expansion cheaper
+    pressure_threshold: float = 0.5, # Reduced from 0.7 to expand at lower pressure
     steps: int = 1,
 ) -> object:
     """Advance the world simulation by one turn.
@@ -159,6 +159,14 @@ def advance_turn(
     P_next = apply_urban_pressure(P_next, ws.settlement_map, ws.owner_map, 
                                   neighbors_axial_wrapper, dt_years, rng)
     
+    # Apply frontier migration to redistribute population toward economic opportunities and frontiers
+    P_next = apply_frontier_migration(P_next, ws.settlement_map, ws.owner_map, 
+                                    food, dt_years, rng)
+    
+    # Apply regional population balance (gentle diffusion every few turns)
+    if ws.turn % 3 == 0:  # Every 3 turns to avoid too much churn
+        P_next = apply_regional_balance(P_next, ws.owner_map, dt_years, rng)
+    
     # Check for settlement upgrades and new settlement creation
     unique_civs = np.unique(ws.owner_map[ws.owner_map >= 0])
     for civ_id in unique_civs:
@@ -265,8 +273,8 @@ def advance_turn(
             current_pressure = pressure[y, x]
             
             # Probabilistic expansion based on pressure level
-            # Higher pressure = higher chance to expand  
-            expansion_prob = min(1.0, (current_pressure - pressure_threshold) * 3.0)
+            # Higher pressure = higher chance to expand, more aggressive than before
+            expansion_prob = min(1.0, (current_pressure - pressure_threshold) * 5.0 + 0.2)
             if rng.random() > expansion_prob:
                 continue
                 
@@ -279,14 +287,33 @@ def advance_turn(
                      if owner[ny, nx] < 0 and ws.biome_map[ny, nx] != 3]  # Exclude only ocean (3)
             if not empty:
                 continue
-            best_food = -1.0
+                
+            # Find civilization's capital to bias expansion away from it
+            capital_pos = None
+            capital_mask = (ws.settlement_map == 4) & (ws.owner_map == civ)
+            capital_coords = np.argwhere(capital_mask)
+            if len(capital_coords) > 0:
+                capital_pos = capital_coords[0]  # Take first if multiple
+            
+            # Score tiles based on food value and distance from capital
+            best_score = -1.0
             best_choices: list[tuple[int, int]] = []
             for ny, nx in empty:
                 fval = food[ny, nx]
-                if fval > best_food + 1e-6:
-                    best_food = float(fval)
+                
+                # Add distance bonus from capital to encourage spreading
+                distance_bonus = 0.0
+                if capital_pos is not None:
+                    # Calculate hex distance (approximate using Euclidean)
+                    dist = ((ny - capital_pos[0])**2 + (nx - capital_pos[1])**2)**0.5
+                    distance_bonus = min(0.3, dist * 0.05)  # Small bonus for distance
+                
+                score = fval + distance_bonus
+                
+                if score > best_score + 1e-6:
+                    best_score = float(score)
                     best_choices = [(ny, nx)]
-                elif abs(fval - best_food) <= 1e-6:
+                elif abs(score - best_score) <= 1e-6:
                     best_choices.append((ny, nx))
 
             if not best_choices:
@@ -336,7 +363,7 @@ def advance_turn(
             # New settlements start as hamlets, but check if they can be settlements at all
             # Most expanded territories should remain pure hamlets for realistic spacing
             from .settlements import has_nearby_settlements
-            if has_nearby_settlements(ny, nx, ws.settlement_map, min_distance=3):
+            if has_nearby_settlements(ny, nx, ws.settlement_map, min_distance=2):  # Reduced from 3 to 2
                 # Too close to settlements, just remain as hamlet with limited population
                 ws.settlement_map[ny, nx] = np.uint8(0)  # Hamlet
                 # Cap population to maintain settlement hierarchy

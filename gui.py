@@ -304,7 +304,7 @@ class GameGUI:
             q, r = self.selected_hex
             t = self.eng.world.get_tile(q, r)
             hud_parts.append(
-                f"hex({q},{r}) biome:{t.biome} pop:{t.pop} owner:{t.owner}"
+                f"hex({q},{r}) biome:{t.biome} pop:{int(t.pop * 500):,} owner:{t.owner}"
             )
         if self.selected_army is not None and self.selected_army in w.armies:
             aid = w.armies.index(self.selected_army)
