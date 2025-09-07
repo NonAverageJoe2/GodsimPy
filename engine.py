@@ -700,7 +700,8 @@ class SimulationEngine:
             elif capital_distance == 2:
                 score += 5.0   # Good bonus for tiles near capital
             else:
-                score -= capital_distance * 0.5  # Penalty for distant tiles
+                # Apply a gentler distance penalty so far tiles remain viable
+                score -= min(capital_distance * 0.2, 3.0)
         
         # Bonus for adjacency to existing tiles (connectivity)
         adjacent_owned = 0
