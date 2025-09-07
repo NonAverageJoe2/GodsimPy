@@ -537,18 +537,36 @@ class SimulationEngine:
     def _colonization_pass_with_tech(self) -> None:
         w = self.world
         POP_THRESHOLD_BASE = 15  # Very low threshold to ensure expansion happens
-        SETTLER_COST = 5            # Very low settler cost 
+        SETTLER_COST = 5            # Very low settler cost
         FOOD_COST_FOR_EXPANSION = 5   # Very low food cost to remove barriers
+        EXPANSION_GRACE_TURNS = 20    # Allow stalled civs to expand eventually
         actions: List[Tuple[int, Coord, Coord]] = []
         claimed: set[Coord] = set()
 
         for cid in sorted(w.civs.keys()):
             civ = w.civs[cid]
 
-            # Check if civ has enough food for expansion
-            if civ.stock_food < FOOD_COST_FOR_EXPANSION:
+            # Track how long it's been since this civ last expanded
+            civ.turns_since_expansion = getattr(civ, "turns_since_expansion", 0) + 1
+
+            # Calculate projected food production for next turn
+            tech_bonuses = None
+            if cid in self.tech_system.civ_states:
+                tech_bonuses = self.tech_system.get_civ_bonuses(cid)
+            food_production, _ = WORKFORCE_SYSTEM.calculate_civ_food_production(civ, w, tech_bonuses)
+            projected_food = civ.stock_food + food_production
+
+            # Only block if both current and projected food are insufficient
+            if (
+                civ.stock_food < FOOD_COST_FOR_EXPANSION
+                and projected_food < FOOD_COST_FOR_EXPANSION
+                and civ.turns_since_expansion < EXPANSION_GRACE_TURNS
+            ):
                 if w.turn % 50 == 0:  # Debug output every 50 turns
-                    print(f"[Debug] Civ {cid} blocked by food: has {civ.stock_food}, needs {FOOD_COST_FOR_EXPANSION}")
+                    print(
+                        f"[Debug] Civ {cid} blocked by food: has {civ.stock_food}, "
+                        f"projects {projected_food:.1f}, needs {FOOD_COST_FOR_EXPANSION}"
+                    )
                 continue
 
             # Expansion bonus reduces threshold (more likely to expand)
@@ -593,7 +611,7 @@ class SimulationEngine:
                     actions.append((cid, (sq, sr), (dq, dr)))
                     claimed.add((dq, dr))
                     expansions_this_turn += 1
-            
+
             # Debug output every 10 turns for testing
             if w.turn % 10 == 0:
                 print(f"[COLONIZATION DEBUG] Civ {cid}: {tiles_checked} tiles, {tiles_with_enough_pop} with pop >= {pop_threshold:.1f}, {len(potential_targets)} targets, {expansions_this_turn} expansions")
@@ -604,10 +622,14 @@ class SimulationEngine:
             src = w.get_tile(sq, sr)
             dst = w.get_tile(dq, dr)
             civ = w.civs[cid]
-            
-            # Consume food for expansion
-            civ.stock_food = max(0, civ.stock_food - FOOD_COST_FOR_EXPANSION)
-            
+
+            # Consume food for expansion proportionally
+            food_spent = min(FOOD_COST_FOR_EXPANSION, civ.stock_food)
+            civ.stock_food -= food_spent
+
+            # Reset expansion timer now that the civ has grown
+            civ.turns_since_expansion = 0
+
             src.pop = max(0, src.pop - SETTLER_COST)
             src._pop_float = float(src.pop)
             dst.owner = cid
