@@ -17,7 +17,7 @@ class GameModifiers:
     min_food_eps: float = 1e-6
 
     # Population dynamics
-    base_population_growth_rate: float = 0.04  # logistic growth per year
+    base_population_growth_rate: float = 0.12  # logistic growth per year (increased for more dynamic gameplay)
     growth_variance: float = 0.2
     food_per_pop: float = 1.0
     disaster_rate: float = 0.02

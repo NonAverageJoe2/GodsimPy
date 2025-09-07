@@ -89,6 +89,7 @@ class TechBonus:
     territory_expansion_rate: float = 0.0
     research_speed: float = 0.0
     trade_income: float = 0.0
+    agricultural_efficiency: float = 0.0  # Reduces workforce needed for farming
     
     def apply_to_yields(self, base_food: float, base_prod: float) -> Tuple[float, float]:
         """Apply technology bonuses to base yields."""
@@ -152,7 +153,7 @@ class TechTree:
             description="Develop basic farming techniques",
             research_cost=10,
             required_age=Age.DISSEMINATION,
-            bonuses=TechBonus(food_multiplier=1.3, population_growth_rate=0.01)
+            bonuses=TechBonus(food_multiplier=1.3, population_growth_rate=0.01, agricultural_efficiency=0.1)
         ))
         
         self.add_technology(Technology(
@@ -261,7 +262,7 @@ class TechTree:
             research_cost=25,
             prerequisites=["agriculture"],
             required_age=Age.BRONZE,
-            bonuses=TechBonus(food_multiplier=1.4, territory_expansion_rate=0.1)
+            bonuses=TechBonus(food_multiplier=1.4, territory_expansion_rate=0.1, agricultural_efficiency=0.15)
         ))
         
         # Iron Age
@@ -296,6 +297,17 @@ class TechTree:
             prerequisites=["writing"],
             required_age=Age.IRON,
             bonuses=TechBonus(research_speed=0.2)
+        ))
+        
+        self.add_technology(Technology(
+            tech_id="crop_rotation",
+            name="Crop Rotation",
+            category=TechCategory.AGRICULTURE,
+            description="Systematic crop rotation increases soil fertility",
+            research_cost=35,
+            prerequisites=["irrigation", "iron_working"],
+            required_age=Age.IRON,
+            bonuses=TechBonus(food_multiplier=1.2, agricultural_efficiency=0.2)
         ))
     
     def add_technology(self, tech: Technology):

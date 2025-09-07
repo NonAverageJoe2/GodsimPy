@@ -15,12 +15,13 @@ from technology import (
     apply_tech_bonuses_to_tile
 )
 
-from worldgen.hexgrid import neighbors6
+# Removed: from worldgen.hexgrid import neighbors6  # Now using even-q offset neighbors
 from worldgen.hexgrid import distance as hex_distance
 from worldgen.biomes import Biome
 from pathfinding import astar
 from time_model import Calendar, WEEK, MONTH, YEAR
 from resources import yields_for
+from workforce import WORKFORCE_SYSTEM
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +177,15 @@ class World:
 
     def neighbors6(self, q: int, r: int) -> List[Coord]:
         out: List[Coord] = []
-        for nq, nr in neighbors6(q, r):
+        # Use even-q offset coordinate neighbors instead of axial
+        # This fixes colonization issues where wrong tiles were being selected
+        if q % 2 == 0:  # Even column
+            offsets = [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, -1), (0, 1)]
+        else:  # Odd column
+            offsets = [(1, 0), (1, 1), (0, -1), (-1, 0), (-1, 1), (0, 1)]
+        
+        for dq, dr in offsets:
+            nq, nr = q + dq, r + dr
             if self.in_bounds(nq, nr):
                 out.append((nq, nr))
         return out
@@ -371,52 +380,124 @@ class SimulationEngine:
                         "[Turn %s] %s has discovered %s!", w.turn, civ.name, tech.name
                     )
 
-        # --- Economy & demographic growth with tech bonuses --------------------
-        BASE_K = 100.0
+        # --- Population-based Economy & Growth System --------------------
         R = 0.5  # intrinsic growth rate per year
         POP_MAX = 1_000_000_000
 
-        gains = {cid: 0.0 for cid in w.civs}
+        # Calculate food production and carrying capacity for each civilization
+        civ_food_data = {}  # civ_id -> (food_production, food_capacity)
         manpower_penalties: Dict[int, float] = {}
+        
         for cid, civ in w.civs.items():
             total_pop = sum(w.get_tile(q, r).pop for q, r in civ.tiles)
-            limit = compute_manpower_limit(total_pop)
-            civ.manpower_limit = limit
+            
+            # Use workforce system to calculate available military population
+            tech_bonuses = None
+            if cid in self.tech_system.civ_states:
+                tech_bonuses = self.tech_system.get_civ_bonuses(cid)
+            
+            workforce = WORKFORCE_SYSTEM.calculate_workforce(cid, total_pop, tech_bonuses)
+            civ.manpower_limit = workforce.available_military
             used = civ.manpower_used
-            if limit > 0 and used > limit:
-                over_ratio = (used - limit) / limit
+            if civ.manpower_limit > 0 and used > civ.manpower_limit:
+                over_ratio = (used - civ.manpower_limit) / civ.manpower_limit
                 manpower_penalties[cid] = min(1.0, over_ratio)
             else:
                 manpower_penalties[cid] = 0.0
-
-        for t in w.tiles:
-            base_food, base_prod = yields_for(t)
-
-            if t.owner is not None and t.owner in self.tech_system.civ_states:
-                bonuses = self.tech_system.get_civ_bonuses(t.owner)
-                food_yield, _prod_yield = apply_tech_bonuses_to_tile(
-                    t, bonuses, base_food, base_prod
-                )
+            
+            # Get technology bonuses
+            tech_bonuses = None
+            if cid in self.tech_system.civ_states:
+                tech_bonuses = self.tech_system.get_civ_bonuses(cid)
+            
+            # Calculate civilization's food production using workforce system
+            food_production, food_capacity = WORKFORCE_SYSTEM.calculate_civ_food_production(
+                civ, w, tech_bonuses
+            )
+            
+            # Apply manpower penalty to food production
+            penalty = manpower_penalties.get(cid, 0.0)
+            food_production *= (1 - penalty)
+            food_capacity *= (1 - penalty)
+            
+            civ_food_data[cid] = (food_production, food_capacity)
+            
+            # Add food to civilization stockpile
+            max_food = max(1000, len(civ.tiles) * 200)
+            civ.stock_food = max(0, min(civ.stock_food + int(food_production * dt), max_food))
+            
+            # Track starvation status for civilization-wide effects
+            if total_pop > food_capacity * 1.2:  # Severe overpopulation
+                if not hasattr(civ, '_starvation_warnings'):
+                    civ._starvation_warnings = 0
+                civ._starvation_warnings += 1
+                
+                # Warn every 50 turns about severe food shortages
+                if w.turn % 50 == 0 and civ._starvation_warnings > 5:
+                    shortage_ratio = total_pop / max(1, food_capacity)
+                    print(f"[FAMINE] {civ.name} faces severe food shortage! Population: {total_pop}, Can feed: {food_capacity:.0f} ({shortage_ratio:.1f}x overpopulation)")
             else:
-                food_yield = base_food
+                if hasattr(civ, '_starvation_warnings'):
+                    civ._starvation_warnings = 0
 
-            penalty = manpower_penalties.get(t.owner, 0.0) if t.owner is not None else 0.0
-            if t.owner is not None:
-                food_yield *= (1 - penalty)
-                gains[t.owner] += food_yield * dt
-
+        # --- Population Growth (now based on civilization food capacity) ---
+        for t in w.tiles:
+            if t.owner is None:
+                continue
+                
+            food_production, food_capacity = civ_food_data.get(t.owner, (0.0, 0.0))
+            civ = w.civs[t.owner]
+            total_civ_pop = sum(w.get_tile(q, r).pop for q, r in civ.tiles)
+            
+            if total_civ_pop <= 0 or food_capacity <= 0:
+                continue
+            
+            # Simple tile carrying capacity based on terrain and total civ food situation
+            base_food, base_prod = yields_for(t)
+            terrain_multiplier = max(0.3, base_food)  # Terrain affects capacity (min 30%)
+            
+            # Technology bonuses
             growth_bonus = 0.0
-            if t.owner is not None and t.owner in self.tech_system.civ_states:
+            if t.owner in self.tech_system.civ_states:
                 bonuses = self.tech_system.get_civ_bonuses(t.owner)
                 growth_bonus = bonuses.population_growth_rate
-
-            K = BASE_K * food_yield
-            K_eff = max(K, 1.0)
+                terrain_multiplier *= (1.0 + getattr(bonuses, 'agricultural_efficiency', 0.0) * 0.2)
+            
+            # Base capacity: civilization food capacity distributed by terrain quality
+            if food_capacity > 0 and total_civ_pop > 0:
+                # Each tile gets base share, modified by terrain
+                base_share = food_capacity / len(civ.tiles)  # Equal base distribution
+                K_eff = max(10.0, base_share * terrain_multiplier)  # Terrain adjusts up/down
+            else:
+                K_eff = 50.0 * terrain_multiplier  # Fallback for new colonies
+            
+            # Apply penalties
+            penalty = manpower_penalties.get(t.owner, 0.0)
             actual_r = (R + growth_bonus) * (1 - penalty)
 
+            # === STARVATION SYSTEM ===
+            # Check if civilization is exceeding its food capacity
+            starvation_modifier = 1.0
+            if total_civ_pop > food_capacity:
+                # Calculate starvation severity
+                overpopulation_ratio = total_civ_pop / max(1, food_capacity)
+                starvation_severity = min(0.9, (overpopulation_ratio - 1.0) * 0.5)  # Cap at 90% death rate
+                starvation_modifier = 1.0 - starvation_severity
+                
+                # Apply starvation deaths immediately (before growth calculation)
+                if t._pop_float > 1.0:  # Only apply to tiles with meaningful population
+                    starvation_deaths = t._pop_float * starvation_severity * dt * 4.0  # Scale by time step
+                    t._pop_float = max(0.1, t._pop_float - starvation_deaths)
+                    
+                    # Debug output for starvation events
+                    if w.turn % 20 == 0 and starvation_deaths > 0.5:
+                        print(f"[Starvation] Civ {t.owner} tile ({t.q},{t.r}): {starvation_deaths:.1f} deaths, pop now {t._pop_float:.1f}")
+
+            # Apply logistic growth (reduced growth rate if starving)
+            growth_rate = actual_r * starvation_modifier
             if t._pop_float > 0:
                 ratio = (K_eff - t._pop_float) / t._pop_float
-                t._pop_float = K_eff / (1.0 + ratio * math.exp(-actual_r * dt))
+                t._pop_float = K_eff / (1.0 + ratio * math.exp(-growth_rate * dt))
             else:
                 t._pop_float = 0.0
 
@@ -428,19 +509,17 @@ class SimulationEngine:
             # Bypass __setattr__ to preserve fractional _pop_float across steps
             object.__setattr__(t, "pop", int(pop_int))
 
-        for cid, g in gains.items():
-            civ = w.civs[cid]
-            # Increase food cap scaling with territory size to support larger civilizations
-            max_food = max(1000, len(w.civs[cid].tiles) * 200)
-            civ.stock_food = max(0, min(civ.stock_food + int(g), max_food))
-
         # Clean up any tiles that lost all population and redistribute people
         self._remove_depopulated_tiles()
         self._redistribute_population()
 
-        # --- Periodic colonization with tech expansion modifier ----------------
+        # --- Enhanced colonization system ----------------
         w.colonize_elapsed += dt
         if w.colonize_elapsed >= w.colonize_period_years:
+            # Try to use enhanced colonization system, fall back to basic if needed
+            if not hasattr(self, 'colonization_system'):
+                self._enable_enhanced_colonization()
+            # Always run basic system for now to ensure colonization continues
             self._colonization_pass_with_tech()
             w.colonize_elapsed %= w.colonize_period_years
             # Move people into newly settled tiles and drop empty ones
@@ -455,9 +534,9 @@ class SimulationEngine:
 
     def _colonization_pass_with_tech(self) -> None:
         w = self.world
-        POP_THRESHOLD_BASE = 30  # Reduced threshold to allow expansion when population is stable
-        SETTLER_COST = 10
-        FOOD_COST_FOR_EXPANSION = 20  # Balanced food cost for sustainable expansion
+        POP_THRESHOLD_BASE = 15  # Very low threshold to ensure expansion happens
+        SETTLER_COST = 5            # Very low settler cost 
+        FOOD_COST_FOR_EXPANSION = 5   # Very low food cost to remove barriers
         actions: List[Tuple[int, Coord, Coord]] = []
         claimed: set[Coord] = set()
 
@@ -466,6 +545,8 @@ class SimulationEngine:
 
             # Check if civ has enough food for expansion
             if civ.stock_food < FOOD_COST_FOR_EXPANSION:
+                if w.turn % 50 == 0:  # Debug output every 50 turns
+                    print(f"[Debug] Civ {cid} blocked by food: has {civ.stock_food}, needs {FOOD_COST_FOR_EXPANSION}")
                 continue
 
             # Expansion bonus reduces threshold (more likely to expand)
@@ -480,25 +561,39 @@ class SimulationEngine:
             max_expansions_this_turn = max(1, min(3, current_tiles // 10))  # 1-3 expansions max, scaling with size
             expansions_this_turn = 0
 
+            # Collect all potential colonization targets and score them
+            potential_targets = []
+            
+            tiles_checked = 0
+            tiles_with_enough_pop = 0
             for (q, r) in sorted(civ.tiles):
-                # Stop if this civ has reached its expansion limit for this turn
-                if expansions_this_turn >= max_expansions_this_turn:
-                    break
-                    
                 t = w.get_tile(q, r)
+                tiles_checked += 1
                 if t.pop < pop_threshold:
                     continue
-                neighbors = list(w.neighbors6(q, r))
-                self.rng.shuffle(neighbors)  # Randomize expansion direction for more natural patterns
-                for nq, nr in neighbors:
+                tiles_with_enough_pop += 1
+                    
+                for nq, nr in w.neighbors6(q, r):
                     if (nq, nr) in claimed:
                         continue
                     tt = w.get_tile(nq, nr)
-                    if tt.owner is None:
-                        actions.append((cid, (q, r), (nq, nr)))
-                        claimed.add((nq, nr))
-                        expansions_this_turn += 1
-                        break  # Only expand to one neighbor per tile per pass
+                    if tt.owner is None and getattr(tt, 'biome', None) != 'ocean':
+                        # Score this colonization target
+                        score = self._score_colonization_target(civ, cid, (q, r), (nq, nr))
+                        potential_targets.append(((q, r), (nq, nr), score))
+            
+            # Sort by score (highest first) and take the best targets
+            potential_targets.sort(key=lambda x: x[2], reverse=True)
+            
+            for (sq, sr), (dq, dr), score in potential_targets[:max_expansions_this_turn]:
+                if (dq, dr) not in claimed and score > 0:
+                    actions.append((cid, (sq, sr), (dq, dr)))
+                    claimed.add((dq, dr))
+                    expansions_this_turn += 1
+            
+            # Debug output every 50 turns
+            if w.turn % 50 == 0:
+                print(f"[Debug] Civ {cid}: {tiles_checked} tiles, {tiles_with_enough_pop} with pop >= {pop_threshold:.1f}, {len(potential_targets)} targets, {expansions_this_turn} expansions")
 
         for cid, (sq, sr), (dq, dr) in actions:
             src = w.get_tile(sq, sr)
@@ -516,15 +611,28 @@ class SimulationEngine:
             civ.tiles.append((dq, dr))
 
     def _remove_depopulated_tiles(self) -> None:
-        """Release ownership of tiles whose population has dropped to zero."""
+        """Release ownership of tiles whose population has dropped to zero and stayed there."""
         w = self.world
         for cid, civ in w.civs.items():
             to_remove: List[Coord] = []
             for q, r in list(civ.tiles):
                 tile = w.get_tile(q, r)
+                # Only remove tiles if they've been empty for multiple turns
+                # This prevents the colonize/lose cycle from temporary population drops
                 if tile.owner == cid and tile.pop <= 0:
-                    tile.owner = None
-                    to_remove.append((q, r))
+                    # Give tiles a grace period - only remove after sustained emptiness
+                    if not hasattr(tile, '_empty_turns'):
+                        tile._empty_turns = 0
+                    tile._empty_turns += 1
+                    if tile._empty_turns >= 5:  # 5 turns of being empty
+                        tile.owner = None
+                        to_remove.append((q, r))
+                        if hasattr(tile, '_empty_turns'):
+                            delattr(tile, '_empty_turns')
+                else:
+                    # Reset counter if tile has population
+                    if hasattr(tile, '_empty_turns'):
+                        delattr(tile, '_empty_turns')
             for coord in to_remove:
                 civ.tiles.remove(coord)
 
@@ -544,19 +652,79 @@ class SimulationEngine:
                 if (q, r) == capital_coord:
                     continue
                 tile = w.get_tile(q, r)
-                if tile.pop < 5 and capital_tile.pop > tile.pop + 1:
-                    tile.pop += 1
-                    capital_tile.pop -= 1
+                # More aggressive redistribution - move more people and to higher thresholds
+                if tile.pop < 15 and capital_tile.pop > tile.pop + 5:
+                    transfer = min(3, capital_tile.pop - tile.pop - 5)  # Move up to 3 people at once
+                    if transfer > 0:
+                        tile.pop += transfer
+                        capital_tile.pop -= transfer
 
-            for q, r in civ.tiles:
-                if (q, r) == capital_coord:
-                    continue
-                tile = w.get_tile(q, r)
-                if tile.pop > capital_tile.pop:
-                    diff = tile.pop - capital_tile.pop
-                    transfer = diff // 2 + 1
-                    tile.pop -= transfer
-                    capital_tile.pop += transfer
+            # DISABLED: Population drain from colonies back to capital
+            # This was causing the "colonize and lose population" behavior
+            # for q, r in civ.tiles:
+            #     if (q, r) == capital_coord:
+            #         continue
+            #     tile = w.get_tile(q, r)
+            #     if tile.pop > capital_tile.pop:
+            #         diff = tile.pop - capital_tile.pop
+            #         transfer = diff // 2 + 1
+            #         tile.pop -= transfer
+            #         capital_tile.pop += transfer
+
+    def _score_colonization_target(self, civ, civ_id, source_coord, target_coord) -> float:
+        """Score a potential colonization target. Higher scores are better."""
+        sq, sr = source_coord
+        tq, tr = target_coord
+        w = self.world
+        
+        target_tile = w.get_tile(tq, tr)
+        score = 0.0
+        
+        # Base score from tile resources
+        food = getattr(target_tile, 'food', 0.0)
+        prod = getattr(target_tile, 'prod', 0.0)
+        score += food * 2.0 + prod * 1.5  # Food more valuable for growth
+        
+        # Heavily favor tiles adjacent to capital
+        capital = getattr(civ, 'capital', None)
+        if capital:
+            cq, cr = capital
+            capital_distance = max(abs(tq - cq), abs(tr - cr))  # Hex distance
+            if capital_distance == 1:
+                score += 10.0  # Huge bonus for tiles next to capital
+            elif capital_distance == 2:
+                score += 5.0   # Good bonus for tiles near capital
+            else:
+                score -= capital_distance * 0.5  # Penalty for distant tiles
+        
+        # Bonus for adjacency to existing tiles (connectivity)
+        adjacent_owned = 0
+        for nq, nr in w.neighbors6(tq, tr):
+            neighbor = w.get_tile(nq, nr)
+            if getattr(neighbor, 'owner', None) == civ_id:
+                adjacent_owned += 1
+        score += adjacent_owned * 3.0  # Strong bonus for connected expansion
+        
+        # Bonus for good terrain
+        biome = getattr(target_tile, 'biome', 'unknown')
+        if biome in ('grass', 'plains', 'forest'):
+            score += 2.0  # Good habitable terrain
+        elif biome in ('mountain', 'desert'):
+            score -= 1.0  # Less desirable terrain
+        
+        # Small randomization to break ties
+        score += self.rng.random() * 0.1
+        
+        return score
+
+    def _enable_enhanced_colonization(self) -> None:
+        """Enable the enhanced colonization system."""
+        try:
+            from systems.colonization_enhanced import integrate_enhanced_colonization
+            integrate_enhanced_colonization(self)
+            print("Enhanced colonization system enabled")
+        except Exception as e:
+            print(f"Failed to enable enhanced colonization: {e}")
 
     def _advance_armies_with_tech(self, dt: float) -> None:
         w = self.world

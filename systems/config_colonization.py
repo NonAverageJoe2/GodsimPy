@@ -6,18 +6,18 @@ Safe to tweak without touching system code.
 from modifiers import MODIFIERS
 
 # Global pace multiplier: 0.5 = slower, 2.0 = faster
-PACE_MULTIPLIER: float = 1.0
+PACE_MULTIPLIER: float = 1.5  # Increased for more dynamic long-term gameplay
 
 # Migration - reduced to encourage colonization instead
-MIGRATION_BASE_RATE: float = 0.05     # Reduced from 0.10 - less internal migration  
-MIGRATION_MIN_SOURCE_POP: int = 40    # Increased from 20 - colonize first, migrate later
+MIGRATION_BASE_RATE: float = 0.08     # Increased for more dynamic population movement  
+MIGRATION_MIN_SOURCE_POP: int = 25    # Reduced to allow migration from stabilized populations
 MIGRATION_TOP_PRESSURE_TILES: int = 5 # per civ, limit sources per step
 MIGRATION_RECENT_WINDOW: int = 6      # turns: reduces ping-pong if dest received migrants recently
 MIGRATION_RECENT_FRICTION: float = 0.8  # multiply outflow if dest recently received
 
 # Colonization - more aggressive expansion
-COLONIZE_SOURCE_MIN_POP: int = 30  # Reduced from 60 - colonize earlier
-COLONIZE_COLONY_SEED: int = 20     # Increased from 15 - bigger colonies
+COLONIZE_SOURCE_MIN_POP: int = 20  # Further reduced - colonize earlier when populations stabilize
+COLONIZE_COLONY_SEED: int = 15     # Smaller colonies to preserve source populations
 
 # Carrying capacity
 CARRYING_CAP_PER_FOOD: float = MODIFIERS.carrying_capacity_per_food
@@ -30,8 +30,8 @@ TRADE_ROUTE_MAX_PER_CIV: int = 3
 
 # Culture
 CULTURAL_RADIUS: int = 3
-CULTURAL_FLIP_MAX_CHANCE: float = 0.10
-POP_CORE_THRESHOLD: int = 80  # tiles at/above this pop never flip
+CULTURAL_FLIP_MAX_CHANCE: float = 0.01  # Reduced from 0.10 - much less cultural flipping
+POP_CORE_THRESHOLD: int = 40  # tiles at/above this pop never flip - lowered to protect colonies sooner
 
 # Connectivity / center calc
 CONNECTIVITY_CENTER_TOP_N: int = 10

@@ -53,18 +53,25 @@ def _safe_get_tile(world, q: int, r: int):
     return t
 
 def _neighbors6(world, q: int, r: int):
-    if hasattr(world, "neighbors6"):
-        for nq, nr in world.neighbors6(q, r):
+    # Use even-q offset coordinate neighbors instead of axial
+    # This fixes the colonization pattern issue where wrong tiles were being selected
+    if q % 2 == 0:  # Even column
+        offsets = [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, -1), (0, 1)]
+    else:  # Odd column
+        offsets = [(1, 0), (1, 1), (0, -1), (-1, 0), (-1, 1), (0, 1)]
+    
+    for dq, dr in offsets:
+        nq, nr = q + dq, r + dr
+        # Check bounds
+        if hasattr(world, 'in_bounds'):
+            if world.in_bounds(nq, nr):
+                yield nq, nr
+        elif hasattr(world, 'width_hex') and hasattr(world, 'height_hex'):
+            if 0 <= nq < world.width_hex and 0 <= nr < world.height_hex:
+                yield nq, nr
+        else:
+            # No bounds checking available, yield anyway
             yield nq, nr
-        return
-    # Fallback to worldgen.hexgrid if exposed
-    try:
-        from worldgen.hexgrid import neighbors6
-        for pair in neighbors6(q, r):
-            yield pair
-    except Exception:
-        # Degenerate fallback (no neighbors)
-        return
 
 def _distance(world, q1: int, r1: int, q2: int, r2: int) -> int:
     if hasattr(world, "distance"):
@@ -116,6 +123,7 @@ class EnhancedColonizationSystem:
         self.recent_received_turns: Dict[Tuple[int, int], deque[int]] = defaultdict(lambda: deque(maxlen=64))
         self.trade_routes: Set[Tuple[Tuple[int, int], Tuple[int, int]]] = set()
         self.cultural_map = np.zeros((getattr(world, "height_hex", 0), getattr(world, "width_hex", 0)), dtype=np.float32)
+        self.newly_colonized: Dict[Tuple[int, int], int] = {}  # (q, r) -> turn_colonized
 
     # ----- Pressure calculations ---------------------------------------------
 
@@ -134,11 +142,18 @@ class EnhancedColonizationSystem:
         )
         crowding = pop / cap_per_food
 
-        # Push factors (crowding)
+        # Push factors (crowding) - with colony protection
         if crowding > 0.8:
             pressure.push_factors += (crowding - 0.8) * 2.0
         elif crowding < 0.3:
             pressure.push_factors -= 0.5  # acts like pull
+        
+        # COLONY PROTECTION: Prevent new/small colonies from losing population
+        # Small populations (< 100) should never be migration sources
+        if pop < 50:
+            pressure.push_factors = min(pressure.push_factors, -2.0)  # Very strong pull for tiny colonies
+        elif pop < 100:
+            pressure.push_factors = min(pressure.push_factors, -1.0)  # Strong pull, no push
 
         # Pull factors (resources + terrain)
         pressure.pull_factors = max(0.0, food * 0.5 + prod * 0.3)
@@ -147,6 +162,12 @@ class EnhancedColonizationSystem:
             pressure.pull_factors += 0.3
         elif biome == "mountain":
             pressure.pull_factors -= 0.5
+        
+        # COLONY ATTRACTION: New colonies are highly attractive for migration
+        if pop < 100:
+            pressure.pull_factors += 2.0  # Strong attraction for new colonies
+        elif pop < 200:
+            pressure.pull_factors += 1.0  # Moderate attraction for growing colonies
             pressure.push_factors += 0.2
         elif biome == "ocean":
             pressure.pull_factors -= 1.0
@@ -428,7 +449,7 @@ class EnhancedColonizationSystem:
                             if (_safe_get_tile(self.world, nq, nr) is not None and
                                 getattr(_safe_get_tile(self.world, nq, nr), "owner", None) is None))
             # Much higher bonus for unclaimed neighbors to prioritize rapid expansion
-            return base + unclaimed * 2.0  # Increased from 0.5 to 2.0
+            return base + unclaimed * 3.0  # Further increased to 3.0 for aggressive expansion
 
         if strategy == ColonizationStrategy.DEFENSIVE:
             owned = sum(1 for nq, nr in _neighbors6(self.world, q, r)
@@ -465,6 +486,11 @@ class EnhancedColonizationSystem:
         H = getattr(self.world, "height_hex", 0)
         W = getattr(self.world, "width_hex", 0)
         turn = int(getattr(self.world, "turn", 0))
+        
+        # Clean up old colonization records (older than 20 turns)
+        to_remove = [(q, r) for (q, r), col_turn in self.newly_colonized.items() if turn - col_turn > 20]
+        for coord in to_remove:
+            del self.newly_colonized[coord]
 
         for r in range(H):
             for q in range(W):
@@ -477,6 +503,12 @@ class EnhancedColonizationSystem:
                 pop = int(getattr(t, "pop", 0))
                 if pop >= C.POP_CORE_THRESHOLD:
                     continue  # core tiles never flip
+                
+                # Protect newly colonized tiles for several turns
+                if (q, r) in self.newly_colonized:
+                    colonize_turn = self.newly_colonized[(q, r)]
+                    if turn - colonize_turn < 10:  # 10 turn protection period
+                        continue  # newly colonized tiles are protected
 
                 pressures: Dict[int, float] = defaultdict(float)
                 for dr in range(max(0, r - C.CULTURAL_RADIUS), min(H, r + C.CULTURAL_RADIUS + 1)):
@@ -504,7 +536,7 @@ class EnhancedColonizationSystem:
                     continue
                 max_civ, max_p = max(pressures.items(), key=lambda kv: kv[1])
                 own_p = pressures.get(owner, 0.0)
-                if max_civ != owner and max_p > own_p * 3.0 and pop < 30:
+                if max_civ != owner and max_p > own_p * 5.0 and pop < 50:
                     # probability scaled by dt and capped
                     chance = min(C.CULTURAL_FLIP_MAX_CHANCE, max(0.0, (max_p - own_p) / 1000.0))
                     chance *= dt_years * C.PACE_MULTIPLIER
@@ -536,7 +568,9 @@ class EnhancedColonizationSystem:
         routes = [((a[0], a[1]), (b[0], b[1])) for (a, b) in self.trade_routes]
         # store only last K migration entries per tile
         mig = {f"{q},{r}": list(self.migration_history[(q, r)]) for (q, r) in self.migration_history.keys()}
-        return {"trade_routes": routes, "migration_history": mig}
+        # store newly colonized tiles
+        newly_col = {f"{q},{r}": turn for (q, r), turn in self.newly_colonized.items()}
+        return {"trade_routes": routes, "migration_history": mig, "newly_colonized": newly_col}
 
     def from_dict(self, data: dict) -> None:
         self.trade_routes.clear()
@@ -557,6 +591,11 @@ class EnhancedColonizationSystem:
                 except Exception:
                     continue
             self.migration_history[(q, r)] = dq
+        # restore newly colonized tracking
+        self.newly_colonized.clear()
+        for key, turn in data.get("newly_colonized", {}).items():
+            q, r = map(int, key.split(","))
+            self.newly_colonized[(q, r)] = int(turn)
 
 
 # ----------- Integration helpers ---------------------------------------------
@@ -585,15 +624,15 @@ def determine_colonization_strategy(engine, civ_id: int) -> ColonizationStrategy
                 coastal += 1
     
     # Stay expansionist much longer if there's unclaimed land
-    if owned < 15 or total_unclaimed > owned * 0.5:  # Expanded from 5 to 15, or if lots of unclaimed land
+    if owned < 30 or total_unclaimed > owned * 0.2:  # Stay expansionist until 30 tiles or if there's still significant unclaimed land
         return ColonizationStrategy.EXPANSIONIST
-    if border > owned * 0.4:  # Increased threshold for defensive
+    if border > owned * 0.5:  # Higher threshold for defensive
         return ColonizationStrategy.DEFENSIVE
-    if coastal > owned * 0.3:  # Increased threshold for coastal
+    if coastal > owned * 0.4:  # Higher threshold for coastal
         return ColonizationStrategy.COASTAL
-    if owned > 25 and border > 8:  # Increased thresholds for aggressive
+    if owned > 40 and border > 12:  # Much higher thresholds for aggressive
         return ColonizationStrategy.AGGRESSIVE
-    return ColonizationStrategy.RESOURCE_FOCUSED
+    return ColonizationStrategy.EXPANSIONIST  # Default back to expansionist to keep growing
 
 
 def integrate_enhanced_colonization(engine) -> None:
@@ -655,11 +694,11 @@ def integrate_enhanced_colonization(engine) -> None:
                         colony_size = C.COLONIZE_COLONY_SEED
                         
                         # If source is capital, only colonize if it has excess population
-                        is_capital = hasattr(civ, 'capital') and civ.capital == (sr, sq)
-                        if is_capital and source_pop > 120:  # Capital has excess population
-                            colony_size = min(colony_size, source_pop - 100)  # Keep at least 100 in capital
+                        is_capital = hasattr(civ, 'capital') and civ.capital == (sq, sr)
+                        if is_capital and source_pop > 150:  # Capital needs more population before colonizing
+                            colony_size = min(colony_size, source_pop - 120)  # Keep at least 120 in capital
                         elif is_capital:
-                            continue  # Don't drain capital below 120
+                            continue  # Don't drain capital below 150
                         
                         # Proceed with colonization
                         st.pop = max(0, source_pop - colony_size)
@@ -668,6 +707,9 @@ def integrate_enhanced_colonization(engine) -> None:
                         civ = engine.world.civs[civ_id]
                         if (dq, dr) not in getattr(civ, "tiles", []):
                             civ.tiles.append((dq, dr))
+                        
+                        # Track newly colonized tiles for protection
+                        sys.newly_colonized[(dq, dr)] = getattr(engine.world, "turn", 0)
                         colonies_created += 1
                         
                         # Print expansion info occasionally
