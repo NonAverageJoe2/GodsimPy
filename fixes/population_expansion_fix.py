@@ -123,22 +123,30 @@ def apply_population_expansion_fix(engine: Any) -> None:
                     score = _score_expansion_target(
                         source_tile, target_tile, expansion_motivation
                     )
-                    
-                    if score > 0:
-                        potential_targets.append(((q, r), (nq, nr), score))
-            
+
+                    potential_targets.append(((q, r), (nq, nr), score))
+
             # Sort and select best targets
             potential_targets.sort(key=lambda x: x[2], reverse=True)
-            
+
+            best_score = potential_targets[0][2] if potential_targets else None
+            if potential_targets and best_score is not None and best_score <= 0:
+                (sq, sr), (dq, dr), _ = potential_targets[0]
+                potential_targets[0] = ((sq, sr), (dq, dr), 0.1)
+
             for (sq, sr), (dq, dr), score in potential_targets[:max_expansions]:
-                if (dq, dr) not in claimed:
+                if (dq, dr) not in claimed and score > 0:
                     actions.append((cid, (sq, sr), (dq, dr)))
                     claimed.add((dq, dr))
                     expansions_this_turn += 1
-                    
+
                     # Debug output
                     if w.turn % 50 == 0:
                         print(f"[Expansion] Civ {cid} ({expansion_motivation}): {source_tile.pop} -> new colony (food ratio: {food_pressure_ratio:.2f})")
+                        if best_score is not None:
+                            print(f"  Best target: score {best_score:.2f}")
+                            if best_score <= 0:
+                                print("  Fallback applied to allow expansion")
         
         # Execute expansions
         for cid, (sq, sr), (dq, dr) in actions:

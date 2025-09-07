@@ -605,7 +605,14 @@ class SimulationEngine:
             
             # Sort by score (highest first) and take the best targets
             potential_targets.sort(key=lambda x: x[2], reverse=True)
-            
+
+            # Ensure at least one expansion occurs even if all scores are non-positive
+            best_score = potential_targets[0][2] if potential_targets else None
+            if potential_targets and best_score is not None and best_score <= 0:
+                (sq, sr), (dq, dr), _ = potential_targets[0]
+                # Apply a small positive fallback score so expansion proceeds
+                potential_targets[0] = ((sq, sr), (dq, dr), 0.1)
+
             for (sq, sr), (dq, dr), score in potential_targets[:max_expansions_this_turn]:
                 if (dq, dr) not in claimed and score > 0:
                     actions.append((cid, (sq, sr), (dq, dr)))
@@ -615,8 +622,10 @@ class SimulationEngine:
             # Debug output every 10 turns for testing
             if w.turn % 10 == 0:
                 print(f"[COLONIZATION DEBUG] Civ {cid}: {tiles_checked} tiles, {tiles_with_enough_pop} with pop >= {pop_threshold:.1f}, {len(potential_targets)} targets, {expansions_this_turn} expansions")
-                if len(potential_targets) > 0:
-                    print(f"  Best target: score {potential_targets[0][2]:.2f}")
+                if len(potential_targets) > 0 and best_score is not None:
+                    print(f"  Best target: score {best_score:.2f}")
+                    if best_score <= 0:
+                        print("  Fallback applied to allow expansion")
 
         for cid, (sq, sr), (dq, dr) in actions:
             src = w.get_tile(sq, sr)
