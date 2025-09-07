@@ -25,6 +25,8 @@ def advance_turn(
     min_settle_pop: float = 15.0,  # Reduced from 25 to encourage expansion
     settler_cost: float = 8.0,     # Reduced from 10 to make expansion cheaper
     pressure_threshold: float = 0.5, # Reduced from 0.7 to expand at lower pressure
+    absolute_pop_threshold: float = 20.0,
+    growth_target: float | None = None,
     steps: int = 1,
 ) -> object:
     """Advance the world simulation by one turn.
@@ -52,6 +54,11 @@ def advance_turn(
         Population cost of founding a new settlement.
     pressure_threshold : float, default 0.8
         Population pressure ratio (pop/capacity) required for expansion.
+    absolute_pop_threshold : float, default 20.0
+        Population level that can trigger expansion even when pressure is low.
+    growth_target : float, optional
+        If provided, civilizations with total population above this value have
+        their pressure threshold reduced to encourage outward growth.
     steps : int, default 1
         Number of time units to advance. ``max(1, int(steps))`` is used
         for time scaling.
@@ -169,13 +176,20 @@ def advance_turn(
     owner = ws.owner_map
     h, w = owner.shape
     pressure = np.divide(P_next, K, out=np.zeros_like(P_next), where=K > 0)
+    unique_civs = np.unique(owner[owner >= 0])
+
+    pressure_threshold_map = np.full_like(pressure, pressure_threshold, dtype=np.float32)
+    if growth_target is not None:
+        for civ_id in unique_civs:
+            if P_next[owner == civ_id].sum() > growth_target:
+                pressure_threshold_map[owner == civ_id] = pressure_threshold * 0.8
+
     high_pressure_mask = (
-        (pressure >= pressure_threshold)
+        ((pressure >= pressure_threshold_map) | (P_next >= absolute_pop_threshold))
         & (P_next >= (min_settle_pop + settler_cost))
         & (owner >= 0)
     )
     expansion_candidates = np.argwhere(high_pressure_mask)
-    unique_civs = np.unique(owner[owner >= 0])
     if not expansion_candidates.size:
         # Check for settlement upgrades and new settlement creation only when expansion isn't possible
         for civ_id in unique_civs:
@@ -267,8 +281,20 @@ def advance_turn(
     
     # Calculate population pressure (pop / carrying_capacity)
     pressure = np.divide(pop, K, out=np.zeros_like(pop), where=K > 0)
-    # Only consider tiles with high pressure and minimum settler capability
-    high_pressure_mask = (pressure >= pressure_threshold) & (pop >= (min_settle_pop + settler_cost)) & (owner >= 0)
+    unique_civs = np.unique(owner[owner >= 0])
+
+    pressure_threshold_map = np.full_like(pressure, pressure_threshold, dtype=np.float32)
+    if growth_target is not None:
+        for civ_id in unique_civs:
+            if pop[owner == civ_id].sum() > growth_target:
+                pressure_threshold_map[owner == civ_id] = pressure_threshold * 0.8
+
+    # Only consider tiles with high pressure or large absolute population
+    high_pressure_mask = (
+        ((pressure >= pressure_threshold_map) | (pop >= absolute_pop_threshold))
+        & (pop >= (min_settle_pop + settler_cost))
+        & (owner >= 0)
+    )
     candidates = np.argwhere(high_pressure_mask)
     
     if candidates.size:
@@ -280,10 +306,13 @@ def advance_turn(
             y, x = candidates[idx]
             civ = owner[y, x]
             current_pressure = pressure[y, x]
-            
+            civ_thresh = pressure_threshold_map[y, x]
+
             # Probabilistic expansion based on pressure level
-            # Higher pressure = higher chance to expand, more aggressive than before
-            expansion_prob = min(1.0, (current_pressure - pressure_threshold) * 5.0 + 0.2)
+            if current_pressure < civ_thresh:
+                expansion_prob = 0.2
+            else:
+                expansion_prob = min(1.0, (current_pressure - civ_thresh) * 5.0 + 0.2)
             if rng.random() > expansion_prob:
                 continue
                 
