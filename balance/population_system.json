@@ -1,0 +1,80 @@
+{
+  "fertility": {
+    "births_per_female_per_year": 0.12,
+    "female_fraction": 0.5,
+    "fertile_age_range": "15-39",
+    "description": "12% birth rate means each fertile female has 0.12 babies per year"
+  },
+  "mortality": {
+    "c0_4": 0.020,
+    "c5_14": 0.002,
+    "c15_39": 0.004,
+    "c40_64": 0.010,
+    "c65p": 0.060,
+    "description": "Annual death rates by age group (fraction who die per year)"
+  },
+  "age_groups": {
+    "c0_4": {
+      "name": "Children",
+      "age_range": "0-4",
+      "duration_years": 5,
+      "default_proportion": 0.10,
+      "characteristics": ["High mortality", "No reproduction", "No work"]
+    },
+    "c5_14": {
+      "name": "Youth", 
+      "age_range": "5-14",
+      "duration_years": 10,
+      "default_proportion": 0.16,
+      "characteristics": ["Low mortality", "No reproduction", "Limited work"]
+    },
+    "c15_39": {
+      "name": "Prime Adults",
+      "age_range": "15-39", 
+      "duration_years": 25,
+      "default_proportion": 0.40,
+      "characteristics": ["Low mortality", "Peak fertility", "Full workforce", "Military eligible"]
+    },
+    "c40_64": {
+      "name": "Mature Adults",
+      "age_range": "40-64",
+      "duration_years": 25, 
+      "default_proportion": 0.24,
+      "characteristics": ["Moderate mortality", "No reproduction", "Full workforce", "Limited military"]
+    },
+    "c65p": {
+      "name": "Elderly",
+      "age_range": "65+",
+      "duration_years": "indefinite",
+      "default_proportion": 0.10,
+      "characteristics": ["High mortality", "No reproduction", "No work", "Wisdom/experience"]
+    }
+  },
+  "population_dynamics": {
+    "carrying_capacity_enabled": true,
+    "food_limitation_enabled": true,
+    "migration_enabled": false,
+    "disease_events_enabled": false,
+    "war_casualties_enabled": true
+  },
+  "advanced_settings": {
+    "time_step_years": 0.019230769,
+    "aging_method": "continuous",
+    "population_update_frequency": "every_turn",
+    "minimum_viable_population": 5,
+    "extinction_threshold": 1
+  },
+  "historical_context": {
+    "period": "Pre-modern (before 1800)",
+    "life_expectancy": "~35-40 years", 
+    "child_mortality": "~20% in first 5 years",
+    "fertility_rate": "~6 children per woman (but high infant mortality)",
+    "population_growth": "Very slow, ~0.1% per year typically"
+  },
+  "balance_notes": {
+    "current_settings": "Designed for moderate population growth with realistic mortality",
+    "growth_rate": "Net growth ~0.5-1.5% per year depending on conditions",
+    "equilibrium": "Population stabilizes when deaths = births",
+    "expansion_driver": "Population pressure drives territorial expansion"
+  }
+}

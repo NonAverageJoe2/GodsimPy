@@ -1,0 +1,39 @@
+{
+  "colonization": {
+    "base_colonization_range": 3,
+    "max_colonization_range": 8,
+    "distance_decay_factor": 0.7,
+    "population_pressure_threshold": 25,
+    "settler_population_cost": 8,
+    "expansion_attempt_probability": 0.15,
+    "minimum_viable_score": 0.1
+  },
+  "terrain_modifiers": {
+    "ocean": 0.0,
+    "mountain": 0.1,
+    "desert": 0.3,
+    "swamp": 0.4,
+    "tundra": 0.5,
+    "hills": 0.7,
+    "forest": 0.8,
+    "grassland": 0.9,
+    "plains": 1.0,
+    "river": 1.2,
+    "coast": 1.1
+  },
+  "culture_spawning": {
+    "spawn_interval_turns": 100,
+    "isolation_threshold_hexes": 5,
+    "min_spawn_population": 15,
+    "base_spawn_probability": 0.15,
+    "cooldown_after_spawn": 50,
+    "max_cultures_per_turn": 1
+  },
+  "strategic_bonuses": {
+    "river_access": 0.3,
+    "coastal_access": 0.2,
+    "mountain_pass": 0.15,
+    "fertile_land": 0.25,
+    "resource_deposits": 0.4
+  }
+}
