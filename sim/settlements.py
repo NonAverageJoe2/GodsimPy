@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 
 # Settlement type constants
 HAMLET = 0
@@ -505,6 +505,49 @@ def enforce_settlement_population_hierarchy(pop_map: NDArray[np.float32],
                     result_pop[sr, sc] += excess * 0.5  # Only redistribute half to avoid runaway growth
     
     return result_pop
+
+
+def initiate_expansion(pop_map: NDArray[np.float32],
+                       settlement_map: NDArray[np.uint8],
+                       owner_map: NDArray[np.int32],
+                       civ_id: int,
+                       rng: Optional[np.random.Generator] = None,
+                       expansion_chance: float = 0.3) -> NDArray[np.float32]:
+    """Redistribute population among a civilization's cities.
+
+    With probability ``expansion_chance`` the population is balanced so that
+    all cities differ by at most one resident.  Otherwise populations remain
+    unchanged, allowing expansion to occur occasionally rather than every
+    simulation step.
+    """
+
+    if rng is None:
+        rng = np.random.default_rng()
+    if rng.random() >= expansion_chance:
+        return pop_map
+
+    # Determine which tiles are cities for this civilization.
+    city_mask = (owner_map == civ_id) & (settlement_map >= CITY)
+    city_coords = np.argwhere(city_mask)
+    if city_coords.shape[0] < 2:
+        return pop_map
+
+    pops = [pop_map[r, c] for r, c in city_coords]
+
+    # Balance populations by moving one person at a time.
+    while True:
+        max_i = int(np.argmax(pops))
+        min_i = int(np.argmin(pops))
+        if pops[max_i] - pops[min_i] <= 1:
+            break
+        pops[max_i] -= 1
+        pops[min_i] += 1
+
+    # Update map with new balanced populations.
+    for (r, c), p in zip(city_coords, pops):
+        pop_map[r, c] = p
+
+    return pop_map
 
 
 def promote_best_hamlet_locations(settlement_map: NDArray[np.uint8],
