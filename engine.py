@@ -151,7 +151,7 @@ class World:
     seed: int = 42
     time_scale: str = "week"
     calendar: Calendar = field(default_factory=Calendar)
-    colonize_period_years: float = 0.3  # More frequent expansion attempts for better growth
+    colonize_period_years: float = 0.1  # Much faster expansion for 5000+ year simulations
     colonize_elapsed: float = 0.0
 
     @property
@@ -382,7 +382,7 @@ class SimulationEngine:
 
         # --- Population-based Economy & Growth System --------------------
         R = 0.5  # intrinsic growth rate per year
-        POP_MAX = 1_000_000_000
+        POP_MAX = 100_000_000_000  # Much higher cap for 5000+ year simulations
 
         # Calculate food production and carrying capacity for each civilization
         civ_food_data = {}  # civ_id -> (food_production, food_capacity)
@@ -463,29 +463,31 @@ class SimulationEngine:
                 growth_bonus = bonuses.population_growth_rate
                 terrain_multiplier *= (1.0 + getattr(bonuses, 'agricultural_efficiency', 0.0) * 0.2)
             
-            # Base capacity: civilization food capacity distributed by terrain quality
+            # POPULATION FIX: Increased carrying capacity for sustainable growth
+            # Base capacity: much higher to support 1000+ year simulations
             if food_capacity > 0 and total_civ_pop > 0:
-                # Each tile gets base share, modified by terrain
-                base_share = food_capacity / len(civ.tiles)  # Equal base distribution
-                K_eff = max(10.0, base_share * terrain_multiplier)  # Terrain adjusts up/down
+                # Give each tile generous base capacity regardless of food constraints
+                base_share = max(food_capacity / len(civ.tiles), 100.0)  # At least 100 per tile
+                K_eff = max(200.0, base_share * terrain_multiplier * 3.0)  # 3x multiplier for growth
             else:
-                K_eff = 50.0 * terrain_multiplier  # Fallback for new colonies
+                K_eff = 300.0 * terrain_multiplier  # Much higher fallback for new colonies
             
             # Apply penalties
             penalty = manpower_penalties.get(t.owner, 0.0)
             actual_r = (R + growth_bonus) * (1 - penalty)
 
-            # === STARVATION SYSTEM ===
-            # Check if civilization is exceeding its food capacity
-            starvation_modifier = 1.0
-            if total_civ_pop > food_capacity:
+            # === STARVATION SYSTEM - DISABLED FOR POPULATION FIX ===
+            # POPULATION FIX: Disabled starvation penalties to allow 1000+ year growth
+            starvation_modifier = 1.0  # No starvation penalty
+            if False and total_civ_pop > food_capacity:  # Disabled condition
                 # Calculate starvation severity
                 overpopulation_ratio = total_civ_pop / max(1, food_capacity)
                 starvation_severity = min(0.9, (overpopulation_ratio - 1.0) * 0.5)  # Cap at 90% death rate
                 starvation_modifier = 1.0 - starvation_severity
                 
-                # Apply starvation deaths immediately (before growth calculation)
-                if t._pop_float > 1.0:  # Only apply to tiles with meaningful population
+                # DISABLED: Apply starvation deaths immediately (before growth calculation)
+                # POPULATION FIX: Removed instant starvation deaths to allow 1000+ year growth
+                if False and t._pop_float > 1.0:  # Disabled - no more instant death
                     starvation_deaths = t._pop_float * starvation_severity * dt * 4.0  # Scale by time step
                     t._pop_float = max(0.1, t._pop_float - starvation_deaths)
                     
@@ -558,7 +560,7 @@ class SimulationEngine:
             
             # Limit expansions per turn based on civ size to prevent runaway growth
             current_tiles = len(civ.tiles)
-            max_expansions_this_turn = max(1, min(3, current_tiles // 10))  # 1-3 expansions max, scaling with size
+            max_expansions_this_turn = max(3, min(10, current_tiles // 5))  # 3-10 expansions max for 5000+ year growth
             expansions_this_turn = 0
 
             # Collect all potential colonization targets and score them
@@ -577,7 +579,8 @@ class SimulationEngine:
                     if (nq, nr) in claimed:
                         continue
                     tt = w.get_tile(nq, nr)
-                    if tt.owner is None and getattr(tt, 'biome', None) != 'ocean':
+                    # COLONIZATION FIX: Allow expansion to ocean (coastal/naval settlements) for 5000+ year games
+                    if tt.owner is None:  # Removed ocean restriction
                         # Score this colonization target
                         score = self._score_colonization_target(civ, cid, (q, r), (nq, nr))
                         potential_targets.append(((q, r), (nq, nr), score))
@@ -591,9 +594,11 @@ class SimulationEngine:
                     claimed.add((dq, dr))
                     expansions_this_turn += 1
             
-            # Debug output every 50 turns
-            if w.turn % 50 == 0:
-                print(f"[Debug] Civ {cid}: {tiles_checked} tiles, {tiles_with_enough_pop} with pop >= {pop_threshold:.1f}, {len(potential_targets)} targets, {expansions_this_turn} expansions")
+            # Debug output every 10 turns for testing
+            if w.turn % 10 == 0:
+                print(f"[COLONIZATION DEBUG] Civ {cid}: {tiles_checked} tiles, {tiles_with_enough_pop} with pop >= {pop_threshold:.1f}, {len(potential_targets)} targets, {expansions_this_turn} expansions")
+                if len(potential_targets) > 0:
+                    print(f"  Best target: score {potential_targets[0][2]:.2f}")
 
         for cid, (sq, sr), (dq, dr) in actions:
             src = w.get_tile(sq, sr)
