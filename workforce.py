@@ -1,8 +1,12 @@
 """
 Population-based workforce and food production system.
 
-Implements historical workforce allocation where ~60% of population 
-must work in agriculture to feed everyone.
+Historically around sixty percent of the population needed to farm
+simply to feed everyone.  That hard requirement caused population
+stagnation in the simulation because the limited food output prevented
+further growth or expansion.  These defaults are tuned slightly higher
+to keep early civilizations from getting trapped at tiny sizes while
+remaining in the same rough historical ballpark.
 """
 from __future__ import annotations
 from typing import Dict, Tuple
@@ -23,13 +27,16 @@ class WorkforceAllocation:
 class WorkforceSystem:
     """Manages population-based food production and workforce allocation."""
     
-    # Base productivity per worker per year
-    AGRICULTURAL_PRODUCTIVITY = 2.0  # Each farmer feeds ~1.67 people (1/0.6)
+    # Base productivity per worker per year.  Increasing this allows each
+    # farmer to feed more people which helps small civilizations grow.
+    AGRICULTURAL_PRODUCTIVITY = 3.0  # Each farmer now feeds 3 people
     FOOD_CONSUMPTION_PER_PERSON = 1.0  # Food consumed per person per year
     MILITARY_FOOD_MULTIPLIER = 1.5    # Soldiers eat 1.5x normal (training, equipment)
     
-    # Required workforce ratios (can be modified by technology)
-    BASE_AGRICULTURAL_RATIO = 0.60  # 60% must work in agriculture
+    # Required workforce ratios (can be modified by technology).  Lowering the
+    # base agricultural ratio reduces how many citizens must farm before the
+    # civilization can support specialists or soldiers.
+    BASE_AGRICULTURAL_RATIO = 0.40  # 40% must work in agriculture
     MAX_MILITARY_RATIO = 0.25      # Up to 25% can be military
     OTHER_WORKERS_RATIO = 0.15     # 15% for crafts, trade, etc.
     
@@ -114,6 +121,13 @@ class WorkforceSystem:
         
         # Total food production and capacity
         food_production = weighted_productivity
+
+        # Provide a subsistence bonus representing foraging, fishing and
+        # other baseline food sources that don't require dedicated farmers.
+        # This softens the hard food cap and allows populations to expand
+        # beyond the initial threshold.
+        food_production *= 1.3
+
         food_capacity = food_production  # How many people this food can support
         
         return food_production, food_capacity
